@@ -1,0 +1,17 @@
+use_default_settings: true
+
+server:
+  secret_key: "signal-os-local-dev"
+  bind_address: "0.0.0.0:8080"
+  base_url: "http://localhost:8888"
+
+search:
+  formats:
+    - html
+    - json
+
+general:
+  debug: false
+
+ui:
+  static_use_hash: true

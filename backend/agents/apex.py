@@ -46,6 +46,10 @@ class ApexAgent(BaseAgent):
                 f"(confidence={decision.confidence:.0%}) — {decision.reasoning}"
             )
 
+            # Expose the detected type to downstream agents (e.g. SIGMA → Shodan),
+            # without clobbering an explicit caller-provided override.
+            context["input_type"] = context.get("input_type") or decision.input_type.value
+
             # ── 2. Activate the swarm from the routing decision ───────────────
             registry = self._registry()
             agents: list[BaseAgent] = []

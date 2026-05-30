@@ -6,10 +6,11 @@ Signal-OS Agent Registry
 
 from .base import BaseAgent, AgentResult
 from .scout import ScoutAgent
+from .sigma import SigmaAgent
 from .stubs import (
     CrawlerAgent, IrisAgent, EchoAgent, PrismAgent,
     NexusAgent, KronosAgent, VaultAgent, SentinelAgent,
-    QuillAgent, SigmaAgent, TerraAgent, InkAgent,
+    QuillAgent, TerraAgent, InkAgent,
 )
 from .apex import ApexAgent  # master supervisor
 

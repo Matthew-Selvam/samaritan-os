@@ -142,32 +142,3 @@ class QuillAgent(BaseAgent):
         self.log("report stub — PDF generation pipeline")
         return AgentResult(agent=self.name, status="stub", output={"note": "TODO: ReportLab/WeasyPrint"},
                            latency_s=self._elapsed(t0))
-
-
-class SigmaAgent(BaseAgent):
-    name = "SIGMA"; role = "Threat Intelligence"; icon = "⊗"
-    description = "IOC ingestion, phishing detection, breach correlation, infrastructure mapping"
-    preferred_models = ["gemma2:9b"]; token_budget = 8192
-
-    async def run(self, input_data, context=None):
-        import os
-        t0 = self._start_timer()
-        target = input_data if isinstance(input_data, str) else input_data.get("query", "")
-        api_key = os.getenv("SHODAN_API_KEY", "")
-
-        if api_key:
-            try:
-                from connectors.shodan import run_shodan
-                self.log(f"querying Shodan for: {target}")
-                data = await run_shodan(target, api_key=api_key)
-                self.log(f"Shodan: {len(data.get('ports', []))} open ports, {len(data.get('vulns', []))} CVEs")
-                return AgentResult(agent=self.name, status="done", output=data,
-                                   confidence=0.85, reasoning="Shodan infrastructure scan complete.",
-                                   latency_s=self._elapsed(t0))
-            except Exception as e:
-                self.log(f"Shodan error: {e}")
-
-        self.log("Shodan API key not set — skipping infrastructure scan")
-        return AgentResult(agent=self.name, status="partial",
-                           output={"iocs": [], "note": "Set SHODAN_API_KEY to enable live scanning"},
-                           latency_s=self._elapsed(t0))

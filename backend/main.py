@@ -38,8 +38,10 @@ from pydantic import BaseModel
 from agents.apex import ApexAgent
 from agents.scout import ScoutAgent
 
-# Load .env before anything reads os.getenv()
-load_dotenv()
+# Load .env — check repo root first, then cwd
+from pathlib import Path
+_env = Path(__file__).parent.parent / ".env"
+load_dotenv(_env if _env.exists() else ".env")
 
 # ── Config (all from environment) ─────────────────────────────────────────────
 

@@ -135,6 +135,19 @@ services:
       timeout: 10s
       retries: 5
 
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./infra/searxng:/etc/searxng:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   neo4j_data:
