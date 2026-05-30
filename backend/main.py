@@ -24,13 +24,37 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import uuid
 from typing import Optional, Any
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Load .env before anything reads os.getenv()
+load_dotenv()
+
+# ── Config (all from environment) ─────────────────────────────────────────────
+
+DATABASE_URL  = os.getenv("DATABASE_URL",  "postgresql://signal:signal@localhost:5432/signal_os")
+REDIS_URL     = os.getenv("REDIS_URL",     "redis://localhost:6379")
+NEO4J_URI     = os.getenv("NEO4J_URI",     "bolt://localhost:7687")
+NEO4J_USER    = os.getenv("NEO4J_USER",    "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+QDRANT_URL    = os.getenv("QDRANT_URL",    "http://localhost:6333")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+SECRET_KEY    = os.getenv("SECRET_KEY",    "change-me-in-production")
+DEBUG         = os.getenv("DEBUG", "true").lower() == "true"
+
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("signal-os")
 
 app = FastAPI(title="Signal-OS", version="0.1.0")
 
@@ -41,6 +65,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Startup: probe connected services ────────────────────────────────────────
+
+@app.on_event("startup")
+async def _startup_checks():
+    log.info("Signal-OS starting up — probing services…")
+
+    # PostgreSQL
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
+        conn.close()
+        log.info("  ✓ PostgreSQL  %s", DATABASE_URL.split("@")[-1])
+    except Exception as e:
+        log.warning("  ✗ PostgreSQL  %s", e)
+
+    # Redis
+    try:
+        import redis as _redis
+        r = _redis.from_url(REDIS_URL, socket_connect_timeout=3)
+        r.ping()
+        log.info("  ✓ Redis       %s", REDIS_URL)
+    except Exception as e:
+        log.warning("  ✗ Redis       %s", e)
+
+    # Neo4j
+    try:
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD) if NEO4J_PASSWORD else None)
+        driver.verify_connectivity()
+        driver.close()
+        log.info("  ✓ Neo4j       %s", NEO4J_URI)
+    except Exception as e:
+        log.warning("  ✗ Neo4j       %s", e)
+
+    # Qdrant
+    try:
+        import httpx
+        r = httpx.get(f"{QDRANT_URL}/readyz", timeout=3)
+        r.raise_for_status()
+        log.info("  ✓ Qdrant      %s", QDRANT_URL)
+    except Exception as e:
+        log.warning("  ✗ Qdrant      %s", e)
+
+    # MinIO
+    try:
+        import httpx
+        r = httpx.get(f"http://{MINIO_ENDPOINT}/minio/health/ready", timeout=3)
+        r.raise_for_status()
+        log.info("  ✓ MinIO       %s", MINIO_ENDPOINT)
+    except Exception as e:
+        log.warning("  ✗ MinIO       %s", e)
+
+    log.info("Startup checks complete.")
+
 
 # ── In-memory stores (replace with Postgres + Neo4j in production) ────────
 
