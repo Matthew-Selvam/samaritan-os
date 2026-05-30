@@ -5,6 +5,8 @@ import { PipelineTrace } from "@/components/PipelineTrace";
 import { StatusBar } from "@/components/StatusBar";
 import { InputBar } from "@/components/InputBar";
 import { TopBar } from "@/components/TopBar";
+import { CasePanel } from "@/components/CasePanel";
+import { EntityGraph, type EntityNode, type EntityEdge } from "@/components/EntityGraph";
 
 export type InvestigationStatus = "idle" | "routing" | "running" | "done" | "error";
 
@@ -19,14 +21,32 @@ export interface Investigation {
   routing_reasoning?: string;
   started_at: number;
   ended_at?: number;
+  entities?: { nodes: EntityNode[]; edges: EntityEdge[] };
 }
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8766";
 
+type CentreView = "trace" | "graph";
+type TopTab     = "INVESTIGATE" | "GRAPH" | string;
+
 export default function Home() {
   const [investigation, setInvestigation] = useState<Investigation | null>(null);
-  const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
+  const [activeAgents, setActiveAgents]   = useState<Set<string>>(new Set());
+  const [centreView, setCentreView]       = useState<CentreView>("trace");
+  const [activeTab, setActiveTab]         = useState<TopTab>("INVESTIGATE");
   const wsRef = useRef<WebSocket | null>(null);
+
+  const handleTabChange = useCallback((tab: TopTab) => {
+    setActiveTab(tab);
+    if (tab === "GRAPH")       setCentreView("graph");
+    if (tab === "INVESTIGATE") setCentreView("trace");
+  }, []);
+
+  const handleCaseSelect = useCallback((inv: Investigation) => {
+    setInvestigation(inv);
+    setCentreView("trace");
+    setActiveTab("INVESTIGATE");
+  }, []);
 
   const startInvestigation = useCallback(async (input: string) => {
     if (!input.trim()) return;
@@ -69,7 +89,12 @@ export default function Home() {
             return next;
           });
         } else if (msg.type === "done") {
-          setInvestigation((prev) => prev ? { ...prev, status: "done", ended_at: Date.now() } : prev);
+          const entities = msg.entities
+            ? { nodes: msg.entities.nodes ?? [], edges: msg.entities.edges ?? [] }
+            : undefined;
+          setInvestigation((prev) =>
+            prev ? { ...prev, status: "done", ended_at: Date.now(), entities } : prev
+          );
           ws.close();
         } else if (msg.type === "error") {
           setInvestigation((prev) => prev ? { ...prev, status: "error", steps: [...prev.steps, `ERROR: ${msg.message}`], ended_at: Date.now() } : prev);
@@ -101,7 +126,7 @@ export default function Home() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--bg)" }}>
-      <TopBar />
+      <TopBar activeTab={activeTab} onTabChange={handleTabChange} />
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left sidebar — agent roster */}
@@ -116,7 +141,7 @@ export default function Home() {
           />
         </aside>
 
-        {/* Centre — search + pipeline */}
+        {/* Centre — search + content */}
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="p-4 border-b" style={{ borderColor: "var(--border)" }}>
             <InputBar
@@ -124,14 +149,74 @@ export default function Home() {
               running={investigation?.status === "routing" || investigation?.status === "running"}
             />
           </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            {investigation ? (
+
+          {/* TRACE | GRAPH tab bar */}
+          {investigation && (
+            <div
+              className="flex gap-1 px-4 border-b flex-shrink-0"
+              style={{ borderColor: "var(--border)", background: "var(--bg-panel)", paddingTop: 6, paddingBottom: 6 }}
+            >
+              {(["trace", "graph"] as CentreView[]).map((v) => {
+                const isActive = centreView === v;
+                return (
+                  <button
+                    key={v}
+                    onClick={() => {
+                      setCentreView(v);
+                      setActiveTab(v === "graph" ? "GRAPH" : "INVESTIGATE");
+                    }}
+                    style={{
+                      padding:       "2px 10px",
+                      borderRadius:  4,
+                      fontSize:      9,
+                      fontWeight:    700,
+                      letterSpacing: "0.12em",
+                      textTransform: "uppercase",
+                      cursor:        "pointer",
+                      background:    isActive ? "rgba(0,255,136,0.1)" : "transparent",
+                      border:        `1px solid ${isActive ? "var(--border-hi)" : "transparent"}`,
+                      color:         isActive ? "var(--green)" : "var(--text-muted)",
+                      transition:    "all 0.12s",
+                      fontFamily:    "var(--font-mono)",
+                    }}
+                  >
+                    {v === "trace" ? "◈ TRACE" : "⬡ GRAPH"}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto p-4" style={{ overflowY: centreView === "graph" ? "hidden" : "auto" }}>
+            {centreView === "graph" ? (
+              <div style={{ height: "100%" }}>
+                <EntityGraph
+                  nodes={investigation?.entities?.nodes ?? []}
+                  edges={investigation?.entities?.edges ?? []}
+                />
+              </div>
+            ) : investigation ? (
               <PipelineTrace investigation={investigation} />
             ) : (
               <WelcomeScreen />
             )}
           </div>
         </main>
+
+        {/* Right sidebar — case history */}
+        <aside
+          className="flex-shrink-0 border-l flex flex-col overflow-hidden"
+          style={{
+            width:            288,
+            borderColor:      "var(--border)",
+            background:       "var(--bg-panel)",
+          }}
+        >
+          <CasePanel
+            onSelect={handleCaseSelect}
+            activeId={investigation?.id}
+          />
+        </aside>
       </div>
 
       <StatusBar investigation={investigation} />

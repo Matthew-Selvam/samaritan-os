@@ -4,7 +4,14 @@ import { useState, useEffect } from "react";
 const AGENT_COUNT = 14;
 const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8766";
 
-export function TopBar() {
+interface Props {
+  activeTab?: string;
+  onTabChange?: (tab: string) => void;
+}
+
+const CLICKABLE_TABS = new Set(["INVESTIGATE", "GRAPH"]);
+
+export function TopBar({ activeTab = "INVESTIGATE", onTabChange }: Props) {
   const [connected, setConnected] = useState(false);
   const [time, setTime] = useState("");
 
@@ -54,20 +61,26 @@ export function TopBar() {
 
       {/* Centre — nav tabs */}
       <nav className="flex gap-1">
-        {["INVESTIGATE", "GRAPH", "TIMELINE", "REPORTS", "MONITOR"].map((tab) => (
-          <button
-            key={tab}
-            className="px-3 py-1 rounded text-xs tracking-widest transition-colors"
-            style={{
-              color: tab === "INVESTIGATE" ? "var(--green)" : "var(--text-muted)",
-              background: tab === "INVESTIGATE" ? "rgba(0,255,136,0.08)" : "transparent",
-              border: `1px solid ${tab === "INVESTIGATE" ? "var(--border-hi)" : "transparent"}`,
-              cursor: "pointer",
-            }}
-          >
-            {tab}
-          </button>
-        ))}
+        {["INVESTIGATE", "GRAPH", "TIMELINE", "REPORTS", "MONITOR"].map((tab) => {
+          const isActive  = tab === activeTab;
+          const clickable = CLICKABLE_TABS.has(tab);
+          return (
+            <button
+              key={tab}
+              onClick={() => clickable && onTabChange?.(tab)}
+              className="px-3 py-1 rounded text-xs tracking-widest transition-colors"
+              style={{
+                color:      isActive ? "var(--green)" : "var(--text-muted)",
+                background: isActive ? "rgba(0,255,136,0.08)" : "transparent",
+                border:     `1px solid ${isActive ? "var(--border-hi)" : "transparent"}`,
+                cursor:     clickable ? "pointer" : "default",
+                opacity:    clickable ? 1 : 0.45,
+              }}
+            >
+              {tab}
+            </button>
+          );
+        })}
       </nav>
 
       {/* Right — system info */}
