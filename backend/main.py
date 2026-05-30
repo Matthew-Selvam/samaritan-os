@@ -35,6 +35,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from agents.apex import ApexAgent
+from agents.scout import ScoutAgent
+
 # Load .env before anything reads os.getenv()
 load_dotenv()
 
@@ -151,38 +154,62 @@ async def _broadcast(channel: str, payload: dict):
     for ws in dead:
         WS_CLIENTS[channel].remove(ws)
 
-# ── Pipeline stub ─────────────────────────────────────────────────────────
+# ── Pipeline ──────────────────────────────────────────────────────────────
 
 async def _run_pipeline(inv_id: str, request: InvestigateRequest):
-    """Universal intelligence pipeline. Agents activate based on input type."""
-    INVESTIGATIONS[inv_id]["status"] = "running"
-    loop = asyncio.get_running_loop()
-    steps = []
+    """Universal intelligence pipeline driven by APEX.
 
-    async def log(msg: str):
+    APEX routes the input, activates the matching agent swarm concurrently, and
+    synthesizes their outputs. Every agent log line is streamed to WS clients as
+    a {"type": "step", "message": ...} event; a {"type": "done"} event with the
+    final report closes the run.
+    """
+    INVESTIGATIONS[inv_id]["status"] = "running"
+    steps: list[str] = []
+
+    async def emit(msg: str):
         steps.append(msg)
         INVESTIGATIONS[inv_id]["steps"] = steps
-        await _broadcast(inv_id, {"type": "step", "inv_id": inv_id, "msg": msg})
+        await _broadcast(inv_id, {"type": "step", "inv_id": inv_id, "message": msg})
 
-    await log(f"[router] detecting input type for: {request.input[:80]}…")
-    # TODO: plug in LangGraph orchestration here
-    await log("[router] dispatching to SCOUT (search) + PRISM (social) agents…")
-    await log("[scout] running dork generation + search federation…")
-    await log("[prism] cross-platform identity resolution…")
-    await log("[correlation] building entity graph…")
-    await log("[timeline] reconstructing chronology…")
-    await log("[quill] generating intelligence report…")
+    try:
+        apex = ApexAgent()
+        result = await apex.run(
+            request.input,
+            context={"emit": emit, "input_type": request.input_type, "case_id": request.case_id},
+        )
+    except Exception as e:  # noqa: BLE001 — surface orchestration failure to the client
+        log.exception("pipeline failed for %s", inv_id)
+        INVESTIGATIONS[inv_id]["status"] = "error"
+        INVESTIGATIONS[inv_id]["error"] = str(e)
+        await _broadcast(inv_id, {"type": "error", "inv_id": inv_id, "error": str(e)})
+        return
 
+    out = result.output or {}
+    agent_results = out.get("agent_results", [])
+
+    # ── Persist every agent's output / confidence / latency ───────────────────
     INVESTIGATIONS[inv_id]["status"] = "done"
+    INVESTIGATIONS[inv_id]["input_type"] = out.get("input_type")
+    INVESTIGATIONS[inv_id]["agents"] = agent_results
+    INVESTIGATIONS[inv_id]["confidence"] = result.confidence
+    INVESTIGATIONS[inv_id]["latency_s"] = result.latency_s
     INVESTIGATIONS[inv_id]["report"] = {
-        "summary": f"Investigation complete for: {request.input}",
-        "entities": [],
-        "timeline": [],
-        "confidence": 0.0,
+        "summary": (
+            f"Investigation complete — {out.get('input_type', 'unknown')}; "
+            f"{len(agent_results)} agents, confidence {result.confidence:.0%}"
+        ),
+        "input_type": out.get("input_type"),
+        "agents_activated": out.get("agents_activated", []),
+        "entities": out.get("entities", []),
+        "signals": out.get("signals", []),
+        "confidence": result.confidence,
+        "latency_s": result.latency_s,
     }
     await _broadcast(inv_id, {
         "type": "done", "inv_id": inv_id,
         "report": INVESTIGATIONS[inv_id]["report"],
+        "agents": agent_results,
     })
 
 # ── HTTP endpoints ────────────────────────────────────────────────────────
@@ -215,6 +242,23 @@ async def list_investigations():
         {"inv_id": k, "status": v["status"], "input": v.get("input", "")[:80]}
         for k, v in INVESTIGATIONS.items()
     ]
+
+@app.post("/api/search")
+async def run_search(req: SearchRequest):
+    """Run SCOUT directly — dork generation + (future) search federation."""
+    scout = ScoutAgent()
+    result = await scout.run(req.query, context={"engines": req.engines, "use_dorks": req.use_dorks})
+    return {
+        "query": req.query,
+        "agent": result.agent,
+        "status": result.status,
+        "output": result.output,
+        "confidence": result.confidence,
+        "reasoning": result.reasoning,
+        "latency_s": result.latency_s,
+        "steps": scout._steps,
+        "error": result.error,
+    }
 
 # ── WebSocket ─────────────────────────────────────────────────────────────
 

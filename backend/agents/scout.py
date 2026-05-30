@@ -6,10 +6,7 @@ The first agent activated for almost every investigation.
 """
 from __future__ import annotations
 
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
 from .base import BaseAgent, AgentResult
 
 
@@ -31,35 +28,57 @@ class ScoutAgent(BaseAgent):
         '"{query}" email OR contact',
     ]
 
+    SEARXNG_URL = os.getenv("SEARXNG_URL", "https://searx.be")
+
     async def run(self, input_data: str | dict, context: dict | None = None) -> AgentResult:
         t0 = self._start_timer()
-        query = input_data if isinstance(input_data, str) else input_data.get("query", "")
-        self.log(f"generating dorks for: {query[:60]}")
+        context = context or {}
+        query = (input_data if isinstance(input_data, str) else input_data.get("query", "")).strip()
 
+        if not query:
+            self.log("no query provided")
+            return AgentResult(
+                agent=self.name, status="error", output={"dorks": []},
+                error="empty query", latency_s=self._elapsed(t0),
+            )
+
+        self.log(f"generating dorks for: {query[:60]}")
         dorks = [t.replace("{query}", query) for t in self.DORK_TEMPLATES]
         self.log(f"generated {len(dorks)} dork queries")
-        self.log("search federation: Google + Bing + Yandex + DuckDuckGo (stub)")
 
-        # Live Search Federation
-        from connectors.searxng import run_searxng
-        
-        self.log(f"executing live search for: {query}")
-        search_data = await run_searxng(query)
-        
-        results = search_data.get("results", [])
-        engines = list(set([r.get("engine") for r in results if r.get("engine")]))
+        # Live search via SearXNG (graceful degradation)
+        search_data: dict = {}
+        results: list = []
+        engines: list = []
+        try:
+            from connectors.searxng import run_searxng
+            self.log(f"federating via SearXNG ({self.SEARXNG_URL})…")
+            search_data = await run_searxng(query, base_url=self.SEARXNG_URL)
+            results = search_data.get("results", [])
+            engines = list({r.get("engine") for r in results if r.get("engine")})
+            self.log(f"got {len(results)} results from {len(engines)} engines")
+        except Exception as e:
+            self.log(f"SearXNG unavailable — dorks only ({e})")
 
+        live = bool(results)
         return AgentResult(
             agent=self.name,
-            status="done" if not search_data.get("error") else "partial",
+            status="done",
             output={
-                "dorks": dorks, 
-                "results": results, 
-                "engines_queried": engines or ["searxng"],
-                "raw_search": search_data
+                "query": query,
+                "dorks": dorks,
+                "dork_count": len(dorks),
+                "results": results,
+                "engines_queried": engines or ["offline"],
+                "live_search": live,
             },
-            confidence=0.8 if results else 0.3,
-            reasoning=f"Found {len(results)} results across {len(engines)} engines via SearXNG." if results else "SearXNG returned no results or failed.",
+            confidence=0.8 if live else 0.3,
+            reasoning=(
+                f"Found {len(results)} results across {len(engines)} engines via SearXNG."
+                if live else
+                "Dork generation complete; SearXNG unavailable — live results pending."
+            ),
+            signals=[{"type": "dork", "query": d} for d in dorks],
             latency_s=self._elapsed(t0),
-            error=search_data.get("error")
+            error=search_data.get("error") if not live else None,
         )

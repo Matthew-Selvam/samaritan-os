@@ -47,10 +47,24 @@ class BaseAgent(ABC):
 
     def __init__(self):
         self._steps: list[str] = []
+        # Optional async-safe sink for live step streaming. When an orchestrator
+        # (APEX) attaches a queue, every log line is also pushed to it so it can
+        # be relayed to WebSocket clients in real time. Synchronous, non-blocking.
+        self._stream: Any = None
+
+    def attach_stream(self, queue: Any) -> None:
+        """Attach an asyncio.Queue so log() lines stream out live."""
+        self._stream = queue
 
     def log(self, msg: str):
-        self._steps.append(f"[{self.name}] {msg}")
-        print(f"  [{self.name}] {msg}")
+        line = f"[{self.name}] {msg}"
+        self._steps.append(line)
+        print(f"  {line}")
+        if self._stream is not None:
+            try:
+                self._stream.put_nowait(line)
+            except Exception:
+                pass  # never let telemetry break the agent
 
     @abstractmethod
     async def run(
