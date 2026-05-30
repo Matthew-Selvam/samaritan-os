@@ -6,6 +6,10 @@ The first agent activated for almost every investigation.
 """
 from __future__ import annotations
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 from .base import BaseAgent, AgentResult
 
 
@@ -36,16 +40,26 @@ class ScoutAgent(BaseAgent):
         self.log(f"generated {len(dorks)} dork queries")
         self.log("search federation: Google + Bing + Yandex + DuckDuckGo (stub)")
 
-        # TODO: integrate SearXNG / SERP APIs here
-        results = [
-            {"engine": "stub", "query": dorks[0], "results": [], "note": "connect SearXNG for live results"},
-        ]
+        # Live Search Federation
+        from connectors.searxng import run_searxng
+        
+        self.log(f"executing live search for: {query}")
+        search_data = await run_searxng(query)
+        
+        results = search_data.get("results", [])
+        engines = list(set([r.get("engine") for r in results if r.get("engine")]))
 
         return AgentResult(
             agent=self.name,
-            status="done",
-            output={"dorks": dorks, "results": results, "engines_queried": ["stub"]},
-            confidence=0.3,
-            reasoning="Dork generation complete. Live search federation requires SearXNG connection.",
+            status="done" if not search_data.get("error") else "partial",
+            output={
+                "dorks": dorks, 
+                "results": results, 
+                "engines_queried": engines or ["searxng"],
+                "raw_search": search_data
+            },
+            confidence=0.8 if results else 0.3,
+            reasoning=f"Found {len(results)} results across {len(engines)} engines via SearXNG." if results else "SearXNG returned no results or failed.",
             latency_s=self._elapsed(t0),
+            error=search_data.get("error")
         )
