@@ -1,4 +1,4 @@
-# Signal-OS — Agent Context
+# Samaritan OS — Agent Context
 
 **AI-Native Multimodal Intelligence Fusion Platform**
 

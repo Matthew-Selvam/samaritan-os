@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Signal-OS — FastAPI Backend
+Samaritan OS — FastAPI Backend
 ============================
 AI-Native Multimodal Intelligence Fusion Platform.
 
@@ -59,9 +59,9 @@ logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-log = logging.getLogger("signal-os")
+log = logging.getLogger("samaritan-os")
 
-app = FastAPI(title="Signal-OS", version="0.1.0")
+app = FastAPI(title="Samaritan OS", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,7 +75,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup_checks():
-    log.info("Signal-OS starting up — probing services…")
+    log.info("Samaritan OS starting up — probing services…")
 
     # PostgreSQL
     try:
@@ -218,7 +218,7 @@ async def _run_pipeline(inv_id: str, request: InvestigateRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "platform": "signal-os", "version": "0.1.0"}
+    return {"status": "ok", "platform": "samaritan-os", "version": "0.1.0"}
 
 @app.post("/api/investigate")
 async def submit_investigation(req: InvestigateRequest):
