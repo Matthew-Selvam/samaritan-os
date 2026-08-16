@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "name": "Signal-OS",
+  "env": {
+    "ENVIRONMENT": {
+      "description": "Deployment environment",
+      "default": "production"
+    },
+    "DEBUG": {
+      "description": "Enable debug mode",
+      "default": "false"
+    },
+    "HOST": {
+      "description": "Server host",
+      "default": "0.0.0.0"
+    },
+    "PORT": {
+      "description": "Server port",
+      "default": "8766"
+    },
+    "SECRET_KEY": {
+      "description": "FastAPI secret key (set your own!)",
+      "default": "change-me-in-production"
+    },
+    "DATABASE_URL": {
+      "description": "PostgreSQL connection string (optional)",
+      "default": ""
+    },
+    "REDIS_URL": {
+      "description": "Redis connection string (optional)",
+      "default": ""
+    },
+    "NEO4J_URI": {
+      "description": "Neo4j connection string (optional)",
+      "default": ""
+    },
+    "QDRANT_URL": {
+      "description": "Qdrant vector DB URL (optional)",
+      "default": ""
+    },
+    "OPSEC_ENABLED": {
+      "description": "Enable Tor/OPSEC layer",
+      "default": "false"
+    },
+    "TOR_PROXY": {
+      "description": "Tor proxy URL",
+      "default": "socks5h://127.0.0.1:9050"
+    },
+    "SHODAN_API_KEY": {
+      "description": "Shodan API key (optional)",
+      "default": ""
+    },
+    "HIBP_API_KEY": {
+      "description": "Have I Been Pwned API key (optional)",
+      "default": ""
+    },
+    "NUMVERIFY_API_KEY": {
+      "description": "NumVerify API key (optional)",
+      "default": ""
+    },
+    "DEHASHED_EMAIL": {
+      "description": "Dehashed email (optional)",
+      "default": ""
+    },
+    "DEHASHED_API_KEY": {
+      "description": "Dehashed API key (optional)",
+      "default": ""
+    },
+    "WHISPER_MODEL": {
+      "description": "Whisper model size (tiny/base/small/medium/large)",
+      "default": "base"
+    },
+    "WHISPER_DEVICE": {
+      "description": "Whisper device (cpu/cuda)",
+      "default": "cpu"
+    }
+  },
+  "buildCommand": "cd backend && pip install -q -r requirements.txt",
+  "devCommand": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8766",
+  "functions": {
+    "backend/**": {
+      "memory": 3008,
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "src": "^/api/(.*)",
+      "dest": "backend/main.py"
+    },
+    {
+      "src": "^/ws/(.*)",
+      "dest": "backend/main.py"
+    }
+  ]
+}
