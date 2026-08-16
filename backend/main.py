@@ -26,42 +26,38 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import tempfile
 import uuid
 from typing import Optional, Any
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from agents.apex import ApexAgent
-from agents.scout import ScoutAgent
-
-# Load .env — check repo root first, then cwd
 from pathlib import Path
+
+# Load .env first, then import config
 _env = Path(__file__).parent.parent / ".env"
 load_dotenv(_env if _env.exists() else ".env")
 
-# ── Config (all from environment) ─────────────────────────────────────────────
-
-DATABASE_URL  = os.getenv("DATABASE_URL",  "postgresql://signal:signal@localhost:5432/signal_os")
-REDIS_URL     = os.getenv("REDIS_URL",     "redis://localhost:6379")
-NEO4J_URI     = os.getenv("NEO4J_URI",     "bolt://localhost:7687")
-NEO4J_USER    = os.getenv("NEO4J_USER",    "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-QDRANT_URL    = os.getenv("QDRANT_URL",    "http://localhost:6333")
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-SECRET_KEY    = os.getenv("SECRET_KEY",    "change-me-in-production")
-DEBUG         = os.getenv("DEBUG", "true").lower() == "true"
+import config
+from agents.apex import ApexAgent
+from agents.scout import ScoutAgent
 
 logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=getattr(logging, config.LOG_LEVEL),
+    format=config.LOG_FORMAT,
 )
 log = logging.getLogger("signal-os")
 
-app = FastAPI(title="Signal-OS", version="0.1.0")
+app = FastAPI(
+    title="Signal-OS",
+    version="0.1.0",
+    description="AI-Native Multimodal Intelligence Fusion Platform",
+    docs_url="/api/docs" if config.DEBUG else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,55 +69,61 @@ app.add_middleware(
 
 # ── Startup: probe connected services ────────────────────────────────────────
 
+async def _probe_service(name: str, test_fn) -> bool:
+    """Generic service probe."""
+    try:
+        await test_fn() if asyncio.iscoroutinefunction(test_fn) else test_fn()
+        log.info("  ✓ %s", name)
+        return True
+    except Exception as e:
+        log.warning("  ✗ %s  %s", name, e)
+        return False
+
+
 @app.on_event("startup")
 async def _startup_checks():
     log.info("Signal-OS starting up — probing services…")
 
     # PostgreSQL
-    try:
+    async def _pg():
         import psycopg2
-        conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
+        conn = psycopg2.connect(config.DATABASE_URL, connect_timeout=3)
         conn.close()
-        log.info("  ✓ PostgreSQL  %s", DATABASE_URL.split("@")[-1])
-    except Exception as e:
-        log.warning("  ✗ PostgreSQL  %s", e)
+    await _probe_service("PostgreSQL", _pg)
 
     # Redis
-    try:
+    async def _redis():
         import redis as _redis
-        r = _redis.from_url(REDIS_URL, socket_connect_timeout=3)
+        r = _redis.from_url(config.REDIS_URL, socket_connect_timeout=3)
         r.ping()
-        log.info("  ✓ Redis       %s", REDIS_URL)
-    except Exception as e:
-        log.warning("  ✗ Redis       %s", e)
+    await _probe_service("Redis", _redis)
 
     # Neo4j
-    try:
+    async def _neo4j():
         from neo4j import GraphDatabase
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD) if NEO4J_PASSWORD else None)
+        driver = GraphDatabase.driver(
+            config.NEO4J_URI,
+            auth=(config.NEO4J_USER, config.NEO4J_PASSWORD) if config.NEO4J_PASSWORD else None
+        )
         driver.verify_connectivity()
         driver.close()
-        log.info("  ✓ Neo4j       %s", NEO4J_URI)
-    except Exception as e:
-        log.warning("  ✗ Neo4j       %s", e)
+    await _probe_service("Neo4j", _neo4j)
 
     # Qdrant
-    try:
+    async def _qdrant():
         import httpx
-        r = httpx.get(f"{QDRANT_URL}/readyz", timeout=3)
+        r = await httpx.AsyncClient().get(f"{config.QDRANT_URL}/readyz", timeout=3)
         r.raise_for_status()
-        log.info("  ✓ Qdrant      %s", QDRANT_URL)
-    except Exception as e:
-        log.warning("  ✗ Qdrant      %s", e)
+    await _probe_service("Qdrant", _qdrant)
 
     # MinIO
-    try:
+    async def _minio():
         import httpx
-        r = httpx.get(f"http://{MINIO_ENDPOINT}/minio/health/ready", timeout=3)
+        r = await httpx.AsyncClient().get(
+            f"http://{config.MINIO_ENDPOINT}/minio/health/ready", timeout=3
+        )
         r.raise_for_status()
-        log.info("  ✓ MinIO       %s", MINIO_ENDPOINT)
-    except Exception as e:
-        log.warning("  ✗ MinIO       %s", e)
+    await _probe_service("MinIO", _minio)
 
     log.info("Startup checks complete.")
 
@@ -143,6 +145,11 @@ class SearchRequest(BaseModel):
     query: str
     engines: list[str] = ["google", "bing", "yandex"]
     use_dorks: bool = True
+
+class NameSearchRequest(BaseModel):
+    name: str
+    location: Optional[str] = None
+    case_id: Optional[str] = None
 
 # ── Broadcast helper ──────────────────────────────────────────────────────
 
@@ -205,6 +212,9 @@ async def _run_pipeline(inv_id: str, request: InvestigateRequest):
         "agents_activated": out.get("agents_activated", []),
         "entities": out.get("entities", []),
         "signals": out.get("signals", []),
+        "graph": out.get("graph", {"nodes": [], "edges": []}),
+        "timeline": out.get("timeline", []),
+        "markdown": out.get("report_markdown"),
         "confidence": result.confidence,
         "latency_s": result.latency_s,
     }
@@ -262,6 +272,71 @@ async def run_search(req: SearchRequest):
         "error": result.error,
     }
 
+# ── Photo search endpoint ─────────────────────────────────────────────────
+
+@app.post("/api/photo-search")
+async def photo_search(file: UploadFile = File(...)):
+    """Upload a photo → run IRIS deanonymization pipeline."""
+    # Save upload to temp file
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or ".jpg")[1])
+    try:
+        shutil.copyfileobj(file.file, tmp)
+        tmp.close()
+
+        inv_id = str(uuid.uuid4())[:8]
+        case_id = str(uuid.uuid4())[:8]
+        INVESTIGATIONS[inv_id] = {
+            "inv_id": inv_id, "case_id": case_id,
+            "input": f"photo:{file.filename}", "input_type": "photo",
+            "status": "queued", "steps": [], "report": None,
+        }
+
+        req = InvestigateRequest(input=tmp.name, input_type="photo", case_id=case_id)
+        asyncio.ensure_future(_run_pipeline(inv_id, req))
+        return {"inv_id": inv_id, "case_id": case_id, "status": "queued", "filename": file.filename}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ── Name search endpoint ──────────────────────────────────────────────────
+
+@app.post("/api/name-search")
+async def name_search(req: NameSearchRequest):
+    """Search by person name → PRISM + SCOUT + INK pipeline."""
+    inv_id = str(uuid.uuid4())[:8]
+    case_id = req.case_id or str(uuid.uuid4())[:8]
+    INVESTIGATIONS[inv_id] = {
+        "inv_id": inv_id, "case_id": case_id,
+        "input": req.name, "input_type": "person_name",
+        "status": "queued", "steps": [], "report": None,
+    }
+    investigate_req = InvestigateRequest(
+        input=req.name, input_type="person_name", case_id=case_id,
+    )
+    asyncio.ensure_future(_run_pipeline(inv_id, investigate_req))
+    return {"inv_id": inv_id, "case_id": case_id, "status": "queued", "name": req.name}
+
+# ── OPSEC endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/opsec/status")
+async def opsec_status():
+    """OPSEC status — Tor connectivity, current exit IP, request count."""
+    try:
+        from opsec import get_opsec_client
+        client = await get_opsec_client()
+        return await client.status()
+    except Exception as e:
+        return {"opsec_enabled": False, "error": str(e)}
+
+@app.post("/api/opsec/newcircuit")
+async def opsec_new_circuit():
+    """Request a new Tor circuit (new exit node)."""
+    try:
+        from opsec import get_opsec_client
+        client = await get_opsec_client()
+        return await client.new_circuit()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # ── WebSocket ─────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/pipeline/{inv_id}")
@@ -284,7 +359,9 @@ async def ws_pipeline(websocket: WebSocket, inv_id: str):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8766)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=config.PORT)
+    parser.add_argument("--host", default=config.HOST)
+    parser.add_argument("--reload", action="store_true", default=config.DEBUG)
     args = parser.parse_args()
-    uvicorn.run("main:app", host=args.host, port=args.port, reload=True, log_level="info")
+    uvicorn.run("main:app", host=args.host, port=args.port, reload=args.reload,
+                log_level=config.LOG_LEVEL.lower(), workers=1 if args.reload else config.WORKERS)

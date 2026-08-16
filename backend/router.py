@@ -23,6 +23,9 @@ class InputType(str, Enum):
     CRYPTO_WALLET = "crypto_wallet"
     URL           = "url"
     IMAGE         = "image"
+    PHOTO         = "photo"
+    FACE          = "face"
+    PERSON_NAME   = "person_name"
     VIDEO         = "video"
     AUDIO         = "audio"
     DOCUMENT      = "document"
@@ -33,13 +36,16 @@ class InputType(str, Enum):
 # Which agents activate for each input type
 AGENT_MAP: dict[InputType, list[str]] = {
     InputType.USERNAME:      ["SCOUT", "PRISM", "NEXUS", "VAULT"],
-    InputType.EMAIL:         ["SCOUT", "SIGMA", "NEXUS", "VAULT"],
-    InputType.PHONE:         ["SCOUT", "NEXUS", "VAULT"],
+    InputType.EMAIL:         ["EMAIL", "SCOUT", "SIGMA", "PRISM", "NEXUS", "VAULT"],
+    InputType.PHONE:         ["PHONOS", "SCOUT", "NEXUS", "VAULT"],
     InputType.DOMAIN:        ["SCOUT", "SIGMA", "CRAWLER", "NEXUS"],
     InputType.IP:            ["SIGMA", "TERRA", "NEXUS"],
     InputType.CRYPTO_WALLET: ["SIGMA", "NEXUS", "VAULT"],
     InputType.URL:           ["SCOUT", "CRAWLER", "IRIS", "SIGMA"],
     InputType.IMAGE:         ["IRIS", "TERRA", "NEXUS"],
+    InputType.PHOTO:         ["IRIS", "TERRA", "NEXUS", "VAULT", "PRISM"],
+    InputType.FACE:          ["IRIS", "PRISM", "NEXUS"],
+    InputType.PERSON_NAME:   ["SCOUT", "PRISM", "NEXUS", "VAULT", "INK"],
     InputType.VIDEO:         ["IRIS", "ECHO", "TERRA"],
     InputType.AUDIO:         ["ECHO", "INK"],
     InputType.DOCUMENT:      ["IRIS", "INK", "CRAWLER"],
@@ -69,6 +75,15 @@ def detect_input_type(raw: str) -> RoutingDecision:
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$", raw):
         return RoutingDecision(InputType.IP, AGENT_MAP[InputType.IP], 0.97,
                                "IPv4 address pattern")
+
+    # Phone number — E.164 (+…) or a formatted number with 7-15 digits.
+    # Checked before domain/username so "+1 (415) 555-0123" routes correctly.
+    _digits = re.sub(r"[^\d]", "", raw)
+    if (raw.startswith("+") and re.match(r"^\+\d[\d\s().\-]{6,20}$", raw)) or \
+       (re.match(r"^[\d\s().\-]{7,20}$", raw) and 7 <= len(_digits) <= 15
+            and re.search(r"[\s().\-+]", raw)):
+        return RoutingDecision(InputType.PHONE, AGENT_MAP[InputType.PHONE], 0.9,
+                               "Phone number pattern (E.164 / formatted)")
 
     # Domain
     if re.match(r"^([a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}$", raw) and "." in raw:
@@ -101,6 +116,12 @@ def detect_input_type(raw: str) -> RoutingDecision:
     if re.match(r"^[a-zA-Z0-9_.\-]{3,30}$", raw) and " " not in raw:
         return RoutingDecision(InputType.USERNAME, AGENT_MAP[InputType.USERNAME], 0.7,
                                "Short alphanumeric — likely username or alias")
+
+    # Person name — 2-4 words, each capitalized or short, no special chars
+    words = raw.split()
+    if 2 <= len(words) <= 4 and all(re.match(r"^[A-Za-z'\-]{2,20}$", w) for w in words):
+        return RoutingDecision(InputType.PERSON_NAME, AGENT_MAP[InputType.PERSON_NAME], 0.75,
+                               "Multi-word input resembles a person name")
 
     # Long text → stylometry + text analysis
     if len(raw) > 100:
