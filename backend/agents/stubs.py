@@ -703,9 +703,10 @@ class VaultAgent(BaseAgent):
     @staticmethod
     def _store_dir() -> str:
         import os
-        d = os.getenv("VAULT_DIR",
-                      os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                   "vault_store"))
+        default = ("/tmp/signal-os/vault_store" if os.getenv("VERCEL") else
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "vault_store"))
+        d = os.getenv("VAULT_DIR", default)
         os.makedirs(d, exist_ok=True)
         return d
 
@@ -785,9 +786,10 @@ class SentinelAgent(BaseAgent):
     @staticmethod
     def _store_dir() -> str:
         import os
-        d = os.getenv("SENTINEL_DIR",
-                      os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                   "sentinel_store"))
+        default = ("/tmp/signal-os/sentinel_store" if os.getenv("VERCEL") else
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "sentinel_store"))
+        d = os.getenv("SENTINEL_DIR", default)
         os.makedirs(d, exist_ok=True)
         return d
 

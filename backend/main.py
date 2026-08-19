@@ -31,7 +31,6 @@ import tempfile
 import uuid
 from typing import Optional, Any
 
-import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,6 +81,13 @@ async def _probe_service(name: str, test_fn) -> bool:
 
 @app.on_event("startup")
 async def _startup_checks():
+    if os.getenv("VERCEL"):
+        # Serverless: no persistent infra is reachable here, and every cold
+        # start would otherwise burn ~3s per probe against services that will
+        # never answer. Every agent already degrades gracefully without them.
+        log.info("Signal-OS starting up on Vercel — skipping infra probes.")
+        return
+
     log.info("Signal-OS starting up — probing services…")
 
     # PostgreSQL
@@ -165,10 +171,33 @@ async def _broadcast(channel: str, payload: dict):
 
 # ── Pipeline ──────────────────────────────────────────────────────────────
 
-async def _run_pipeline(inv_id: str, request: InvestigateRequest):
-    """Universal intelligence pipeline driven by APEX.
+def _build_report(result, agent_results: list[dict]) -> dict:
+    """Shape an ApexAgent AgentResult into the report dict the frontend expects."""
+    out = result.output or {}
+    return {
+        "summary": (
+            f"Investigation complete — {out.get('input_type', 'unknown')}; "
+            f"{len(agent_results)} agents, confidence {result.confidence:.0%}"
+        ),
+        "input_type": out.get("input_type"),
+        "agents_activated": out.get("agents_activated", []),
+        "entities": out.get("entities", []),
+        "signals": out.get("signals", []),
+        "graph": out.get("graph", {"nodes": [], "edges": []}),
+        "timeline": out.get("timeline", []),
+        "markdown": out.get("report_markdown"),
+        "confidence": result.confidence,
+        "latency_s": result.latency_s,
+    }
 
-    APEX routes the input, activates the matching agent swarm concurrently, and
+
+async def _run_pipeline(inv_id: str, request: InvestigateRequest):
+    """Universal intelligence pipeline driven by APEX (background-task variant).
+
+    Used by the async submit/poll/WebSocket flow, which requires a long-lived
+    process (local dev, Docker, Railway/Render/a VPS) so the in-memory
+    INVESTIGATIONS dict and the background task survive between requests. APEX
+    routes the input, activates the matching agent swarm concurrently, and
     synthesizes their outputs. Every agent log line is streamed to WS clients as
     a {"type": "step", "message": ...} event; a {"type": "done"} event with the
     final report closes the run.
@@ -203,21 +232,7 @@ async def _run_pipeline(inv_id: str, request: InvestigateRequest):
     INVESTIGATIONS[inv_id]["agents"] = agent_results
     INVESTIGATIONS[inv_id]["confidence"] = result.confidence
     INVESTIGATIONS[inv_id]["latency_s"] = result.latency_s
-    INVESTIGATIONS[inv_id]["report"] = {
-        "summary": (
-            f"Investigation complete — {out.get('input_type', 'unknown')}; "
-            f"{len(agent_results)} agents, confidence {result.confidence:.0%}"
-        ),
-        "input_type": out.get("input_type"),
-        "agents_activated": out.get("agents_activated", []),
-        "entities": out.get("entities", []),
-        "signals": out.get("signals", []),
-        "graph": out.get("graph", {"nodes": [], "edges": []}),
-        "timeline": out.get("timeline", []),
-        "markdown": out.get("report_markdown"),
-        "confidence": result.confidence,
-        "latency_s": result.latency_s,
-    }
+    INVESTIGATIONS[inv_id]["report"] = _build_report(result, agent_results)
     await _broadcast(inv_id, {
         "type": "done", "inv_id": inv_id,
         "report": INVESTIGATIONS[inv_id]["report"],
@@ -247,6 +262,38 @@ async def get_investigation(inv_id: str):
     if inv_id not in INVESTIGATIONS:
         return {"error": "not found"}
     return INVESTIGATIONS[inv_id]
+
+@app.post("/api/investigate-sync")
+async def submit_investigation_sync(req: InvestigateRequest):
+    """Run a full investigation to completion within a single request/response.
+
+    Serverless platforms (Vercel Functions) isolate each invocation — there is no
+    guarantee a background task survives past the response, and no guarantee a
+    later GET lands on the same instance as the in-memory INVESTIGATIONS dict
+    that a POST wrote to. This endpoint sidesteps both problems by never
+    returning until APEX has finished, so the full report comes back in one
+    round trip. No WebSocket step-streaming (not applicable outside a
+    persistent process) — the frontend just awaits the response.
+    """
+    inv_id = str(uuid.uuid4())[:8]
+    case_id = req.case_id or str(uuid.uuid4())[:8]
+    try:
+        apex = ApexAgent()
+        result = await apex.run(
+            req.input,
+            context={"input_type": req.input_type, "case_id": case_id},
+        )
+    except Exception as e:  # noqa: BLE001 — surface orchestration failure to the client
+        log.exception("sync pipeline failed for %s", inv_id)
+        return {"inv_id": inv_id, "case_id": case_id, "status": "error", "error": str(e)}
+
+    agent_results = (result.output or {}).get("agent_results", [])
+    return {
+        "inv_id": inv_id, "case_id": case_id, "status": "done",
+        "input": req.input, "input_type": (result.output or {}).get("input_type"),
+        "agents": agent_results,
+        "report": _build_report(result, agent_results),
+    }
 
 @app.get("/api/investigations")
 async def list_investigations():
@@ -358,6 +405,7 @@ async def ws_pipeline(websocket: WebSocket, inv_id: str):
 
 if __name__ == "__main__":
     import argparse
+    import uvicorn  # only needed for local/self-hosted runs, not on Vercel
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=config.PORT)
     parser.add_argument("--host", default=config.HOST)

@@ -35,10 +35,16 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 
 # ── Agent-specific stores ──────────────────────────────────────────────────────
+# On Vercel, only /tmp is writable, and it's wiped between cold starts — VAULT
+# and SENTINEL still work per-invocation but recurrence won't persist across
+# them. A long-lived host (Railway/Render/a VPS) gets real persistence.
 
-VAULT_DIR = os.getenv("VAULT_DIR", str(BASE_DIR / "backend" / "vault_store"))
-SENTINEL_DIR = os.getenv("SENTINEL_DIR", str(BASE_DIR / "backend" / "sentinel_store"))
-REPORTS_DIR = os.getenv("REPORTS_DIR", str(BASE_DIR / "backend" / "reports"))
+_ON_VERCEL = bool(os.getenv("VERCEL"))
+_default_store_root = "/tmp/signal-os" if _ON_VERCEL else str(BASE_DIR / "backend")
+
+VAULT_DIR = os.getenv("VAULT_DIR", f"{_default_store_root}/vault_store")
+SENTINEL_DIR = os.getenv("SENTINEL_DIR", f"{_default_store_root}/sentinel_store")
+REPORTS_DIR = os.getenv("REPORTS_DIR", f"{_default_store_root}/reports")
 
 # ── Security & Auth ────────────────────────────────────────────────────────────
 

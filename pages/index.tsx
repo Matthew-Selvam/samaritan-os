@@ -3,7 +3,7 @@
  * Main dashboard for intelligence investigations
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   Container,
   TextField,
@@ -18,9 +18,6 @@ import {
   Divider,
   Alert,
 } from "@mui/material";
-
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8766";
 
 interface Investigation {
   inv_id: string;
@@ -52,31 +49,21 @@ export default function Home() {
 
     setLoading(true);
     setError(null);
+    setInvestigation(null);
 
     try {
-      // Submit investigation
-      const submitRes = await fetch(`${BACKEND_URL}/api/investigate`, {
+      // Same-origin call — runs the full pipeline to completion and returns
+      // the finished report in one round trip (serverless-safe: no polling,
+      // no background task, no shared state across requests).
+      const res = await fetch("/api/investigate-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input: input.trim() }),
       });
 
-      if (!submitRes.ok) throw new Error("Failed to submit investigation");
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
 
-      const { inv_id } = await submitRes.json();
-
-      // Poll for results
-      let result = null;
-      for (let i = 0; i < 60; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        const getRes = await fetch(`${BACKEND_URL}/api/investigate/${inv_id}`);
-        if (!getRes.ok) continue;
-
-        result = await getRes.json();
-        if (result.status === "done" || result.status === "error") break;
-      }
-
+      const result = await res.json();
       setInvestigation(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");

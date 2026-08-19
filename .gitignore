@@ -24,3 +24,4 @@ out/
 backend/vault_store/
 backend/sentinel_store/
 backend/reports/
+.vercel
