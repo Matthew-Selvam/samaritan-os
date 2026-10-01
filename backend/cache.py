@@ -38,6 +38,7 @@ from observability import get_logger, get_metrics
 __all__ = [
     "cached",
     "cache_backend",
+    "cache_backend_async",
     "cache_delete",
     "cache_delete_prefix",
     "cache_get",
@@ -156,8 +157,20 @@ def _record_miss() -> None:
     get_metrics().incr("cache.miss")
 
 
-def cache_backend() -> str:
+async def cache_backend_async() -> str:
     """Return the active backend name, resolving it on first use.
+
+    The probe is performed *outside* ``_backend_lock``. Doing it while holding
+    the lock was a self-deadlock: with no running event loop the probe calls
+    ``asyncio.run(...)``, whose failure path (``_ping_async``) re-acquired the
+    same lock to drop to the memory backend. Because that lock is not
+    reentrant, a synchronous first call with Redis down blocked forever —
+    a health endpoint that never returned. Resolving before taking the lock
+    also stops concurrent callers from queueing behind a network timeout.
+
+    The probe is awaited because its verdict must be known before committing
+    to a backend: scheduling it and assuming success reported "redis" for a
+    server that was not answering.
 
     Returns:
         ``"redis"`` when a live Redis was reached, otherwise ``"memory"``.
@@ -165,19 +178,56 @@ def cache_backend() -> str:
     global _backend
     if _backend is not None:
         return _backend
+
+    resolved = "redis" if await _probe_redis() else "memory"
     with _backend_lock:
-        if _backend is not None:
-            return _backend
-        if _probe_redis():
-            _backend = "redis"
-        else:
-            _backend = "memory"
-            log.info("cache backend: in-process TTL-LRU (max_size=%d)",
-                     getattr(config, "CACHE_MAX_SIZE", 1000))
+        if _backend is None:
+            if resolved == "memory":
+                log.info(
+                    "cache backend: in-process TTL-LRU (max_size=%d)",
+                    getattr(config, "CACHE_MAX_SIZE", 1000),
+                )
+            _backend = resolved
         return _backend
 
 
-def _probe_redis() -> bool:
+def cache_backend() -> str:
+    """Return the active backend name from synchronous code.
+
+    Once resolved, this is a cheap attribute read and never probes. When the
+    backend has not been resolved yet, the probe is run to completion on a
+    private loop — the caller is assumed to be a synchronous entry point (an
+    ops report, a CLI) rather than an event-loop task, so nothing is blocked.
+    Async callers should use :func:`cache_backend_async` instead.
+
+    Returns:
+        ``"redis"`` when a live Redis was reached, otherwise ``"memory"``.
+    """
+    global _backend
+    if _backend is not None:
+        return _backend
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Genuinely synchronous caller: safe to block on the probe.
+        return asyncio.run(cache_backend_async())
+
+    # Inside a loop we must not block it. Probe on a private worker thread so
+    # the caller still gets a truthful answer instead of an optimistic guess.
+    import threading
+
+    box: dict[str, str] = {}
+
+    def _worker() -> None:
+        box["backend"] = asyncio.run(cache_backend_async())
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=getattr(config, "REDIS_PROBE_TIMEOUT", 5.0) or 5.0)
+    return box.get("backend", _backend or "memory")
+
+
+async def _probe_redis() -> bool:
     """Try to reach Redis once. Never raises.
 
     Honours ``REDIS_REQUIRED``: when true an unreachable Redis is logged as
@@ -208,22 +258,25 @@ def _probe_redis() -> bool:
     except Exception as exc:  # noqa: BLE001 — an absent Redis is expected
         return _probe_failed(exc)
 
-    # Perform the round trip on the loop. When there is no running loop yet
-    # (a synchronous caller, e.g. `cache_stats()`), fall back to a bounded
-    # private loop so the probe is still a real network call.
+    # Perform the round trip on the loop and *await the verdict* before
+    # declaring the backend live. Scheduling the ping and returning `True`
+    # unconditionally (an earlier version) meant a dead Redis still reported
+    # "redis", so the caller committed to a backend that could not answer.
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
-
-    if loop is not None:
-        loop.create_task(_ping_async(client))
-    else:
+        # Synchronous caller (e.g. cache_stats()): run the ping on a bounded
+        # private loop so the probe is still a real network round trip.
         try:
-            asyncio.run(_ping_async(client))
+            ok = asyncio.run(_ping_async(client))
         except Exception as exc:  # noqa: BLE001
             _close_quietly(client)
             return _probe_failed(exc)
+    else:
+        ok = await _ping_async(client)
+
+    if not ok:
+        return False
 
     global _redis
     _redis = client
@@ -246,10 +299,14 @@ async def _ping_async(client) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 — Redis down is an expected mode
         _close_quietly(client)
-        with _backend_lock:
-            if _redis is client:
-                _redis = None
-                _backend = "memory"
+        # Reassignment happens outside the lock: this coroutine can run inside
+        # the probe that _probe_redis() started on a thread with no event loop,
+        # where taking the same non-reentrant lock would self-deadlock. The
+        # writes are single attribute rebinds, so they are safe here, and
+        # cache_backend() re-checks _backend under the lock before committing.
+        if _redis is client:
+            _redis = None
+            _backend = "memory"
         _probe_failed(exc)
         return False
 
@@ -388,7 +445,7 @@ async def cache_get(key: str) -> Any | None:
     """
     if not key:
         return None
-    if cache_backend() == "redis":
+    if await cache_backend_async() == "redis":
         try:
             blob = await _redis.get(key)
             if blob is None:
@@ -439,7 +496,7 @@ async def cache_set(key: str, value: Any, ttl: float | None = None) -> None:
         _stats["sets"] += 1
     get_metrics().incr("cache.set")
 
-    if cache_backend() == "redis":
+    if await cache_backend_async() == "redis":
         try:
             if effective_ttl and effective_ttl > 0:
                 await _redis.set(key, blob, ex=int(effective_ttl))
@@ -468,7 +525,7 @@ async def cache_delete(key: str) -> bool:
     """
     if not key:
         return False
-    if cache_backend() == "redis":
+    if await cache_backend_async() == "redis":
         try:
             removed = await _redis.delete(key)
         except Exception as exc:  # noqa: BLE001
@@ -494,7 +551,7 @@ async def cache_delete_prefix(prefix: str) -> int:
     """
     if not prefix:
         return 0
-    if cache_backend() == "redis":
+    if await cache_backend_async() == "redis":
         removed = 0
         try:
             # SCAN, never KEYS: a blocking KEYS on a large keyspace stalls the

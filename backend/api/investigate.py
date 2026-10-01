@@ -63,6 +63,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.ops import (
+    guarded_router,
     ALLOWED_IMAGE_TYPES,
     auth_gate,
     broadcast,
@@ -80,10 +81,13 @@ from observability import get_logger, get_metrics
 
 log = get_logger("signal-os.api.investigate")
 
-router = APIRouter(prefix="/api", tags=["investigate"])
+router = guarded_router(prefix="/api", tags=["investigate"])
 
 #: Hard ceiling on one investigation input, in characters.
 MAX_INPUT_CHARS = 8192
+
+#: Rows fetched to serve a paginated investigation listing (see list_investigations).
+MAX_LIST_WINDOW = 1000
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -811,8 +815,10 @@ async def list_investigations(case_id: Optional[str] = None, limit: int = 50,
     """
     size = clamp_limit(limit)
     start = clamp_offset(offset)
+    # See the note in cases.list_cases: a limit-only store API means the total
+    # must come from one bounded window, not from the page-sized fetch.
     store = await resolve_store()
-    rows = await store.list_investigations(case_id=case_id, limit=size + start + 1)
+    rows = await store.list_investigations(case_id=case_id, limit=MAX_LIST_WINDOW)
     total = len(rows)
     page = rows[start:start + size]
     if response is not None:
@@ -1154,8 +1160,3 @@ async def compare_models(req: CompareRequest, request: Request):
         "latency_s": round(time.monotonic() - started, 3),
     }
 
-
-# Auth + rate limiting cover every route above, matching how WS-MAIN mounts this
-# router: dependencies are attached at the router so a new route cannot ship
-# unguarded.
-router.dependencies.extend([Depends(auth_gate), Depends(rate_limit_dep)])

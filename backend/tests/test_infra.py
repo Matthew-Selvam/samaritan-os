@@ -295,14 +295,14 @@ class TestCache:
     async def test_ttl_expiry_removes_the_entry(self):
         await cache_module.cache_set("k:ttl", "short-lived", ttl=0.05)
         assert await cache_module.cache_get("k:ttl") == "short-lived"
-        time.sleep(0.12)
+        await asyncio.sleep(0.12)
         assert await cache_module.cache_get("k:ttl") is None, \
             "an expired key must read as a miss"
 
     @pytest.mark.asyncio
     async def test_zero_ttl_means_no_expiry(self):
         await cache_module.cache_set("k:forever", "sticky", ttl=0)
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
         assert await cache_module.cache_get("k:forever") == "sticky"
 
     @pytest.mark.asyncio
@@ -815,17 +815,8 @@ class TestStore:
             "the secret should have been masked, not merely absent"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "store.py bug: SQLiteStore._execute returns self._db.lastrowid, but "
-            "lastrowid is a cursor attribute — aiosqlite.Connection has no such "
-            "member — so the first INSERT degrades the store to memory. Fixing "
-            "store.py makes this xfail turn into a pass (strict=True enforces it)."
-        ),
-    )
     async def test_sqlite_writes_do_not_degrade_the_store(self, tmp_path):
-        """Regression guard for a real bug in ``store.py``.
+        """Regression guard for a real bug in ``store.py`` (now fixed).
 
         ``SQLiteStore._execute`` returned ``self._db.lastrowid`` after a write.
         ``lastrowid`` is a *cursor* attribute — ``aiosqlite.Connection`` has no
@@ -834,8 +825,10 @@ class TestStore:
         first write against a perfectly healthy SQLite file therefore silently
         demoted the store to memory, and nothing written after it was durable.
 
-        This test asserts writes work on the SQL backend. It currently fails;
-        the fix belongs to whoever owns ``store.py``.
+        The same method also executed the statement twice when ``fetch`` was
+        set, once for the write and again for the read.
+
+        This test asserts writes stay on the SQL backend and read back.
         """
         path = str(tmp_path / "audit.db")
         fresh = store_module.SQLiteStore(path)

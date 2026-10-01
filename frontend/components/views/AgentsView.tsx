@@ -32,7 +32,7 @@ import {
 } from "@/components/ui";
 import { StatusDot } from "@/components/StatusDot";
 import { AGENT_ROSTER, agentColor } from "@/components/AgentGrid";
-import { apiFetch, runAgent } from "@/lib/api";
+import { apiFetch, listAgents, runAgent } from "@/lib/api";
 import {
   confidencePct,
   formatRelativeTime,

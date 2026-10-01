@@ -12,7 +12,7 @@
  * button is disabled with an explanation rather than silently doing nothing.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Badge,
@@ -56,6 +56,11 @@ export interface GraphViewProps {
   onClearCaseEntities?: () => void;
   /** Current run, used for the header. */
   investigation?: Investigation | null;
+  /**
+   * Entity id to centre on. Set by cross-links from TIMELINE / KNOWLEDGE /
+   * CASES; applied once per value, then ignored until it changes.
+   */
+  focusEntityId?: string | null;
   className?: string;
 }
 
@@ -107,6 +112,7 @@ export function GraphView({
   caseEntities = null,
   onClearCaseEntities,
   investigation = null,
+  focusEntityId = null,
   className,
 }: GraphViewProps) {
   const toast = useToast();
@@ -205,6 +211,31 @@ export function GraphView({
   const onReady = useCallback((api: GraphApi) => {
     apiRef.current = api;
   }, []);
+
+  /* ── Cross-link focus: honoured once the node exists on the canvas ── */
+  const appliedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusEntityId) {
+      appliedFocus.current = null;
+      return;
+    }
+    if (appliedFocus.current === focusEntityId) return;
+    const api = apiRef.current;
+    if (!api) return;
+    // The node can arrive a tick after the view mounts, so retry briefly.
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      if (api.focusNode(focusEntityId)) {
+        appliedFocus.current = focusEntityId;
+        window.clearInterval(timer);
+      } else if (attempts > 12) {
+        window.clearInterval(timer);
+        toast.error(`Entity ${truncate(focusEntityId, 40)} is not part of the loaded graph.`);
+      }
+    }, 180);
+    return () => window.clearInterval(timer);
+  }, [allNodes.length, focusEntityId, toast]);
 
   const exportPng = useCallback(() => {
     const api = apiRef.current;

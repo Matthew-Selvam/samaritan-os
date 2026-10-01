@@ -41,10 +41,14 @@ import { apiCall, downloadBlob, toJson, useAsyncResource } from "@/lib/hooks";
 interface VisItem {
   id: string;
   content: string;
+  /** `point` for instants (OSINT events), `range` for spans. */
+  type?: "point" | "range" | "box";
   start: number;
   group?: string;
   title?: string;
   className?: string;
+  /** Inline CSS, used to tint each item with its source colour. */
+  style?: string;
 }
 
 interface VisTimelineInstance {
@@ -98,7 +102,13 @@ function groupClass(source: string): string {
   return `tl-group-${source.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
 }
 
-/** Inject the dark vis theme once. */
+/**
+ * Inject the dark vis theme once.
+ *
+ * vis ships a light stylesheet; without this the items render as bright white
+ * chips on the console. Everything here is derived from the same tokens the
+ * rest of the app uses, so the timeline reads as part of the product.
+ */
 function installVisTheme(): void {
   if (typeof document === "undefined") return;
   const id = "signal-os-vis-theme";
@@ -112,13 +122,41 @@ function installVisTheme(): void {
     .vis-time-axis .vis-text { color: #5a7a9a; font-size: 9px; letter-spacing: 0.08em; }
     .vis-time-axis .vis-grid.vis-major { border-color: #2a4060; }
     .vis-labelset .vis-label { color: #c8d8e8; font-size: 10px; }
-    .vis-foreground .vis-group { border-color: #2a4060; }
+    .vis-foreground .vis-group { border-color: #2a4060; background: rgba(17,24,32,0.6); }
+    .vis-labelset .vis-label.vis-odd,
+    .vis-labelset .vis-label.vis-even { background: transparent; color: #5a7a9a; }
     .vis-time-axis .vis-text.vis-vertical { color: #3d5872; }
     .vis-current-time { background-color: rgba(0,255,136,0.35); }
-    .vis-item { border-radius: 3px; }
-    .vis-item.vis-dot { border-width: 2px; }
-    .vis-item.vis-selected { box-shadow: 0 0 10px rgba(0,212,255,0.5); }
-    .vis-tooltip { background: #080c10; border: 1px solid #2a4060; color: #c8d8e8; font-size: 10px; }
+
+    /* Item chips: dark surface, mono type, per-source accent border. */
+    .vis-item {
+      border-radius: 3px;
+      color: #c8d8e8 !important;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      padding: 1px 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .vis-item .vis-item-content { color: #c8d8e8 !important; }
+    .vis-item.vis-dot {
+      border-width: 2px;
+      border-style: solid;
+      box-shadow: 0 0 5px currentColor;
+    }
+    .vis-item .vis-item-dot { border-color: inherit; }
+    .vis-item.low { border-style: dashed; opacity: 0.75; }
+    .vis-item.vis-selected {
+      box-shadow: 0 0 0 1px #00d4ff, 0 0 10px rgba(0,212,255,0.45);
+      color: #fff !important;
+    }
+    .vis-tooltip {
+      background: #080c10;
+      border: 1px solid #2a4060;
+      color: #c8d8e8;
+      font-size: 10px;
+      font-family: var(--font-mono);
+    }
   `;
   document.head.appendChild(style);
 }
@@ -145,6 +183,17 @@ export function TimelineView({
   const toast = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<VisTimelineInstance | null>(null);
+  /** Resize observers to disconnect when vis is rebuilt or unmounted. */
+  const observersRef = useRef<ResizeObserver[]>([]);
+  /**
+   * `true` once the vis instance exists.
+   *
+   * The instance is created inside an async import, so the data-push effect can
+   * run before it does. Gating on this flag (rather than only on `timelineRef`)
+   * is what guarantees the first push happens *after* construction instead of
+   * silently returning early and never re-running.
+   */
+  const [timelineReady, setTimelineReady] = useState(false);
   const [selected, setSelected] = useState<TimelineEvent | null>(null);
   const [filterSource, setFilterSource] = useState("");
   const [minConfidence, setMinConfidence] = useState(0);
@@ -223,12 +272,53 @@ export function TimelineView({
           multiselect: false,
           margin: { item: { horizontal: 6, vertical: 4 } },
           tooltip: { followMouse: true, overflowMethod: "cap" },
+          // OSINT bursts land many events in the same minute; clustering keeps
+          // a lane legible instead of stacking dozens of identical chips.
+          cluster: {
+            enabled: true,
+            maxItemsInCluster: 6,
+            clusterLabelTemplate: (params: { count: number }) => `${params.count} events`,
+            clusterNestedGroupLabelTemplate: "",
+            showGroupsAsNested: false,
+            maxClusterLevel: 2,
+            clusterLevelForItems: 1,
+          },
+          clusterInternalScaling: 0.7,
+          clusterMaxWidth: 26,
         });
         timelineRef.current = timeline;
+        setTimelineReady(true);
         timeline.on("itemclick", (params) => {
-          const event = allEvents.find((candidate, index) => `e${index}` === params.item);
+          // Plain items are `e<index>`; clusters are synthesised by vis and are
+          // expanded by vis's own drill-down (zoom in to split them).
+          const index = /^e(\d+)$/.exec(params.item)?.[1];
+          if (index === undefined) return;
+          const event = allEvents[Number(index)];
           if (event) setSelected(event);
         });
+
+        // vis sizes its canvas from the container at construction time. Inside a
+        // flex/grid column that measurement is 0 until after the first paint, so
+        // without this the axis renders but no items ever get a lane.
+        const ro = new ResizeObserver(() => {
+          const host = containerRef.current;
+          if (!host) return;
+          const { width, height } = host.getBoundingClientRect();
+          if (width > 0 && height > 0) {
+            timeline.setOptions({ width: `${width}px`, height: `${height}px` });
+            timeline.redraw();
+          }
+        });
+        ro.observe(containerRef.current);
+        observersRef.current.push(ro);
+
+        // Apply the measured size once, up front — the observer only fires on
+        // subsequent changes.
+        const rect = containerRef.current.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          timeline.setOptions({ width: `${rect.width}px`, height: `${rect.height}px` });
+          timeline.redraw();
+        }
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err));
@@ -239,6 +329,9 @@ export function TimelineView({
     void mount();
     return () => {
       cancelled = true;
+      setTimelineReady(false);
+      for (const observer of observersRef.current) observer.disconnect();
+      observersRef.current = [];
       timelineRef.current?.destroy();
       timelineRef.current = null;
     };
@@ -249,7 +342,7 @@ export function TimelineView({
   /* ── Push filtered data ── */
   useEffect(() => {
     const timeline = timelineRef.current;
-    if (!timeline) return;
+    if (!timeline || !timelineReady) return;
     const grouped = new Set(filtered.map((event) => event.source ?? "unknown"));
     timeline.setGroups(
       [...grouped].map((source) => ({
@@ -265,22 +358,31 @@ export function TimelineView({
       const color = GROUP_COLORS[(event.source ?? "").toUpperCase()] ?? "#5a7a9a";
       items.push({
         id: `e${index}`,
-        content: truncate(event.label, 42),
+        // Every event is an instant, and bursts share a lane: draw the marker
+        // only. The label lives in the tooltip, the side table and the drawer.
+        content: "",
+        type: "point",
         start: time,
         group: event.source ?? "unknown",
         title: `${event.label}${event.description ? `\n${event.description}` : ""}`,
-        className: event.confidence !== undefined && event.confidence < 0.4 ? "vis-dot low" : "",
+        className: [
+          groupClass(event.source ?? "unknown"),
+          event.confidence !== undefined && event.confidence < 0.4 ? "low" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        // Inline so the accent wins over vis's default item background.
+        style: `color:${color};background:${color}1f;border-color:${color}`,
       });
-      void color;
     });
     timeline.setItems(items);
     if (items.length > 0) timeline.fit({ animation: false });
-  }, [filtered, filterSource]);
+  }, [filtered, filterSource, timelineReady]);
 
   /* ── Time-axis granularity ── */
   useEffect(() => {
     const timeline = timelineRef.current;
-    if (!timeline) return;
+    if (!timeline || !timelineReady) return;
     const optionSets: Record<typeof scale, Record<string, unknown>> = {
       hours: { minorTimeLabels: { hour: "HH:mm" }, majorTimeLabels: { hour: "ddd D MMM" } },
       days: { minorTimeLabels: { day: "D MMM", hour: "HH:mm" }, majorTimeLabels: { day: "MMMM YYYY" } },
@@ -288,7 +390,7 @@ export function TimelineView({
       years: { minorTimeLabels: {}, majorTimeLabels: { year: "YYYY" } },
     };
     timeline.setOptions({ ...optionSets[scale] });
-  }, [scale]);
+  }, [scale, timelineReady]);
 
   const zoomIn = useCallback(() => timelineRef.current?.zoomIn(1.4), []);
   const zoomOut = useCallback(() => timelineRef.current?.zoomOut(1.4), []);
@@ -404,8 +506,8 @@ export function TimelineView({
         </Button>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 p-2 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="flex min-h-[360px] min-w-0 flex-col gap-2">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden p-2 xl:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="flex h-full min-h-[360px] min-w-0 flex-col gap-2">
           {loadError ? (
             <Panel>
               <ErrorState
@@ -437,7 +539,7 @@ export function TimelineView({
                 ref={containerRef}
                 role="application"
                 aria-label="Event timeline. Drag to pan, scroll to zoom."
-                className="min-h-[320px] flex-1 rounded-md"
+                className="h-full min-h-[320px] flex-1 rounded-md"
               />
               <p className="mono-label !text-[8px]">
                 {filtered.length} OF {allEvents.length} EVENTS · CLICK AN EVENT FOR DETAIL

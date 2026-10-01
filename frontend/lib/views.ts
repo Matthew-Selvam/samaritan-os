@@ -47,45 +47,21 @@ export interface ViewDef {
   readonly keywords: readonly string[];
 }
 
-/** The registry. Order defines the hotkeys: dashboard=1 … ops=9. */
+/**
+ * The registry. The order is also the rail order and the digit hotkeys.
+ *
+ * Digits 1-3 are deliberately GRAPH / TIMELINE / REPORTS: those three bindings
+ * already exist in `lib/shortcuts.ts` (`view.graph`, `view.timeline`,
+ * `view.reports`) and are rendered in the shortcuts dialog. Starting here at 1
+ * keeps one key meaning exactly one thing — re-numbering them would make the
+ * dialog lie. The remaining six views take 4-9.
+ */
 export const VIEWS: readonly ViewDef[] = [
-  {
-    id: "dashboard",
-    label: "DASHBOARD",
-    description: "Mission screen: live stats, service health, recent runs.",
-    hotkey: "1",
-    icon: "LayoutDashboard",
-    keywords: ["home", "mission", "overview", "stats", "health"],
-  },
-  {
-    id: "investigate",
-    label: "INVESTIGATE",
-    description: "Deep work: live pipeline, agents, entities, signals.",
-    hotkey: "2",
-    icon: "Crosshair",
-    keywords: ["run", "search", "pipeline", "live", "work"],
-  },
-  {
-    id: "cases",
-    label: "CASES",
-    description: "Case management: create, rename, tag, export.",
-    hotkey: "3",
-    icon: "FolderKanban",
-    keywords: ["case", "workspace", "files", "manage"],
-  },
-  {
-    id: "agents",
-    label: "AGENTS",
-    description: "The 16-agent roster, routing DAG and console.",
-    hotkey: "4",
-    icon: "Bot",
-    keywords: ["roster", "swarm", "dag", "run agent", "routing"],
-  },
   {
     id: "graph",
     label: "GRAPH",
     description: "Force-directed entity graph with clustering and export.",
-    hotkey: "5",
+    hotkey: "1",
     icon: "Network",
     keywords: ["entity", "network", "links", "cytoscape", "clusters"],
   },
@@ -93,25 +69,57 @@ export const VIEWS: readonly ViewDef[] = [
     id: "timeline",
     label: "TIMELINE",
     description: "KRONOS chronology: zoom, filter, cross-link to graph.",
-    hotkey: "6",
+    hotkey: "2",
     icon: "Clock",
     keywords: ["kronos", "chronology", "events", "dates"],
-  },
-  {
-    id: "knowledge",
-    label: "KNOWLEDGE",
-    description: "Cross-case vault: saved entities, notes, recall, purge.",
-    hotkey: "7",
-    icon: "Database",
-    keywords: ["vault", "memory", "saved", "notes", "gdpr", "recall"],
   },
   {
     id: "reports",
     label: "REPORTS",
     description: "Rendered intelligence reports with export and print.",
-    hotkey: "8",
+    hotkey: "3",
     icon: "FileText",
     keywords: ["quill", "markdown", "export", "pdf", "brief"],
+  },
+  {
+    id: "dashboard",
+    label: "DASHBOARD",
+    description: "Mission screen: live stats, service health, recent runs.",
+    hotkey: "4",
+    icon: "LayoutDashboard",
+    keywords: ["home", "mission", "overview", "stats", "health"],
+  },
+  {
+    id: "investigate",
+    label: "INVESTIGATE",
+    description: "Deep work: live pipeline, agents, entities, signals.",
+    hotkey: "5",
+    icon: "Crosshair",
+    keywords: ["run", "search", "pipeline", "live", "work"],
+  },
+  {
+    id: "cases",
+    label: "CASES",
+    description: "Case management: create, rename, tag, export.",
+    hotkey: "6",
+    icon: "FolderKanban",
+    keywords: ["case", "workspace", "files", "manage"],
+  },
+  {
+    id: "agents",
+    label: "AGENTS",
+    description: "The 16-agent roster, routing DAG and console.",
+    hotkey: "7",
+    icon: "Bot",
+    keywords: ["roster", "swarm", "dag", "run agent", "routing"],
+  },
+  {
+    id: "knowledge",
+    label: "KNOWLEDGE",
+    description: "Cross-case vault: saved entities, notes, recall, purge.",
+    hotkey: "8",
+    icon: "Database",
+    keywords: ["vault", "memory", "saved", "notes", "gdpr", "recall"],
   },
   {
     id: "ops",

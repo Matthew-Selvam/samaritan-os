@@ -38,6 +38,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.ops import (
+    guarded_router,
     auth_gate,
     build_zip,
     clamp_limit,
@@ -53,11 +54,22 @@ from observability import get_logger, get_metrics
 
 log = get_logger("signal-os.api.cases")
 
-router = APIRouter(prefix="/api/cases", tags=["cases"])
+router = guarded_router(prefix="/api/cases", tags=["cases"])
 
 #: Cap on rows pulled from the store when deriving entities/timeline for a case,
 #: so a case with thousands of investigations cannot produce an unbounded export.
 DERIVE_WINDOW = 500
+
+#: Rows fetched to serve a paginated case listing. Bounded so the total is stable
+#: across pages; the store itself is capped at config.STORE_MAX_ROWS.
+MAX_LIST_WINDOW = 1000
+
+#: Longest accepted case name. Enforced at the handler boundary (see
+#: `_enforce_name_bound`) because `schemas.CaseCreate` inherits a model-wide
+#: `str_max_length=4096` from `RequestModel`, and in pydantic a config-level
+#: string bound *replaces* the per-field `max_length` — so the field's own
+#: 256-char limit was silently not being applied.
+MAX_CASE_NAME_CHARS = 256
 
 
 def _now_iso() -> str:
@@ -109,7 +121,7 @@ class _CaseCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=256)
+    name: str = Field(min_length=1, max_length=MAX_CASE_NAME_CHARS)
     target: Optional[str] = Field(default=None, max_length=2048)
     tags: list[str] = Field(default_factory=list, max_length=32)
     notes: Optional[str] = Field(default=None, max_length=8192)
@@ -426,6 +438,30 @@ def _stats_payload(case_id: str, case: dict, rows: list[dict], reports: list[dic
     }
 
 
+def _enforce_name_bound(name: Any) -> None:
+    """Reject a case name longer than :data:`MAX_CASE_NAME_CHARS`.
+
+    The effective ``CaseCreate`` comes from ``schemas.py``, whose
+    ``RequestModel`` sets a model-wide ``str_max_length=4096``. Pydantic treats a
+    config-level string bound as *replacing* the per-field ``max_length``, so the
+    declared 256-char limit on ``name`` never actually applied and a 4 KB
+    "case name" was accepted. Re-checking here keeps the documented bound real
+    without editing another workstream's schema.
+
+    Args:
+        name: The submitted case name.
+
+    Raises:
+        HTTPException: 422 when the name exceeds the bound.
+    """
+    if isinstance(name, str) and len(name) > MAX_CASE_NAME_CHARS:
+        raise HTTPException(status_code=422, detail=[{
+            "loc": ["body", "name"],
+            "msg": f"String should have at most {MAX_CASE_NAME_CHARS} characters",
+            "type": "string_too_long",
+        }])
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Routes
 # ════════════════════════════════════════════════════════════════════════════
@@ -452,8 +488,14 @@ async def list_cases(limit: int = 50, offset: int = 0):
     """
     size = clamp_limit(limit)
     start = clamp_offset(offset)
+    # `total` has to describe the whole collection, not the page window. The
+    # store's list API is limit-only (no COUNT), so fetching `size + start + 1`
+    # and calling `len()` the total under-reports by up to `start + 1` — a
+    # client paginating to the last page would see the count shrink as it
+    # advanced. Fetch one bounded window instead and page from that; the store
+    # is already capped (STORE_MAX_ROWS), so this stays bounded.
     store = await resolve_store()
-    rows = await store.list_cases(limit=size + start + 1)
+    rows = await store.list_cases(limit=MAX_LIST_WINDOW)
     return paged(rows, size, start)
 
 
@@ -471,7 +513,11 @@ async def create_case(payload: CaseCreate, request: Request):
 
     Returns:
         The stored case record, including its ``case_id``.
+
+    Raises:
+        HTTPException: 422 when a field exceeds its documented bound.
     """
+    _enforce_name_bound(payload.name)
     case_id = payload.case_id or str(uuid.uuid4())[:8]
     record = {
         "case_id": case_id,
@@ -822,7 +868,3 @@ def _synthesise_markdown(inv_id: str, report: dict, case_id: str) -> str:
         lines.append("_No timeline events recorded._")
     return "\n".join(lines) + "\n"
 
-
-# Auth + rate limiting are attached at the router so every case route — including
-# the destructive DELETE — is guarded by the same policy.
-router.dependencies.extend([Depends(auth_gate), Depends(rate_limit_dep)])

@@ -18,7 +18,10 @@ import pytest
 
 from agents.kronos import KronosAgent
 
-pytestmark = pytest.mark.asyncio
+# Only the async agent tests need the marker; ``asyncio_mode = auto`` in
+# pytest.ini already runs unmarked coroutines, so the module-level mark below
+# would otherwise be applied to the (many) synchronous parser tests and pytest
+# would warn on every one of them.
 
 #: Fixed "today" for every relative-date assertion.
 NOW = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)

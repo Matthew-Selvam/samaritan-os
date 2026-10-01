@@ -25,7 +25,6 @@ import pytest
 from agents import AGENT_REGISTRY
 from agents.base import AgentResult, BaseAgent, agent_timeout
 
-pytestmark = pytest.mark.asyncio
 
 
 #: Every agent name the platform registers. Kept explicit so a silently dropped

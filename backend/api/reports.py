@@ -30,6 +30,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from api.ops import (
+    guarded_router,
     auth_gate,
     build_zip,
     current_principal,
@@ -42,7 +43,7 @@ from observability import get_logger, get_metrics
 
 log = get_logger("signal-os.api.reports")
 
-router = APIRouter(prefix="/api", tags=["reports"])
+router = guarded_router(prefix="/api", tags=["reports"])
 
 #: Formats accepted by ``/report`` and ``/export``.
 REPORT_FORMATS = ("markdown", "pdf", "json")
@@ -469,7 +470,3 @@ async def _audit(request: Request, record: dict, fmt: str, size: int) -> None:
     except Exception:  # noqa: BLE001 — auditing is best-effort
         pass
 
-
-# Auth + rate limiting cover exports too: an export is as sensitive as the
-# investigation it renders.
-router.dependencies.extend([Depends(auth_gate), Depends(rate_limit_dep)])

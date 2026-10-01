@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.ops import (
+    guarded_router,
     auth_gate,
     clamp_limit,
     current_principal,
@@ -46,7 +47,7 @@ from observability import get_logger, get_metrics
 
 log = get_logger("signal-os.api.agents")
 
-router = APIRouter(prefix="/api", tags=["agents"])
+router = guarded_router(prefix="/api", tags=["agents"])
 
 #: Ceiling on one standalone run's input, in characters.
 MAX_RUN_INPUT_CHARS = 8192
@@ -503,6 +504,3 @@ async def run_agent(name: str, payload: _AgentRunRequest, request: Request):
         "latency_s": latency,
     }
 
-
-# Auth + rate limiting apply to introspection and to standalone runs alike.
-router.dependencies.extend([Depends(auth_gate), Depends(rate_limit_dep)])

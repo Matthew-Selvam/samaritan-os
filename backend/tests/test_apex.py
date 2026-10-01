@@ -24,8 +24,6 @@ import pytest
 from agents.apex import ApexAgent
 from agents.base import AgentResult, BaseAgent
 
-pytestmark = pytest.mark.asyncio
-
 
 #: The keys ``main.py`` / the frontend read. Removing one is a breaking change.
 REQUIRED_OUTPUT_KEYS = (

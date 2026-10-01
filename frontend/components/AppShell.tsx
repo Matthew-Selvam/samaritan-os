@@ -63,6 +63,7 @@ import type {
   PipelineEvent,
   Report,
   Signal,
+  TimelineEvent,
 } from "@/lib/types";
 import { useInvestigationStream } from "@/lib/useInvestigationStream";
 import { useHotkeys } from "@/lib/shortcuts";
@@ -122,6 +123,15 @@ function Shell({ initialView, className }: AppShellProps) {
   const [activeAgents, setActiveAgents] = useState<ReadonlySet<string>>(new Set());
   const [entities, setEntities] = useState<readonly Entity[]>([]);
   const [signals, setSignals] = useState<readonly Signal[]>([]);
+  /**
+   * Timeline events for the current run.
+   *
+   * Kept as shell state rather than read from `investigation.report.timeline` at
+   * render time: the list endpoint hydrates a run whose `report` may be absent
+   * while the per-agent `timeline` arrives separately, and the TIMELINE view must
+   * not flicker to empty when either source lands.
+   */
+  const [timelineEvents, setTimelineEvents] = useState<readonly TimelineEvent[]>([]);
   const [agentResults, setAgentResults] = useState<readonly AgentResult[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const inputRef = useRef<InputBarHandle>(null);
@@ -272,6 +282,7 @@ function Shell({ initialView, className }: AppShellProps) {
           if (report) {
             setEntities(report.entities ?? []);
             setSignals(report.signals ?? []);
+            setTimelineEvents(report.timeline ?? []);
           }
           if (event.entities?.nodes?.length && !report?.entities?.length) {
             setEntities(
@@ -326,6 +337,7 @@ function Shell({ initialView, className }: AppShellProps) {
       setRunError(null);
       setEntities([]);
       setSignals([]);
+      setTimelineEvents([]);
       setAgentResults([]);
       setActiveAgents(new Set());
       setGraphCaseEntities(null);
@@ -412,10 +424,12 @@ function Shell({ initialView, className }: AppShellProps) {
       setRunError(null);
       setSearchResults(null);
       setGraphCaseEntities(null);
-      // Seed from the list payload so the UI is instant, then hydrate.
+      // Seed from the list payload so the UI is instant, then hydrate from the
+      // detail endpoint, which is the authoritative copy of the report.
       setInvestigation(inv);
       setEntities(inv.report?.entities ?? []);
       setSignals(inv.report?.signals ?? []);
+      setTimelineEvents(inv.report?.timeline ?? []);
       setAgentResults(inv.agents ?? []);
       setActiveAgents(new Set());
       navigate("investigate");
@@ -426,6 +440,7 @@ function Shell({ initialView, className }: AppShellProps) {
         setInvestigation(full);
         setEntities(full.report?.entities ?? []);
         setSignals(full.report?.signals ?? []);
+        setTimelineEvents(full.report?.timeline ?? []);
         setAgentResults(full.agents ?? []);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
@@ -440,6 +455,7 @@ function Shell({ initialView, className }: AppShellProps) {
     setInvestigation(null);
     setEntities([]);
     setSignals([]);
+    setTimelineEvents([]);
     setAgentResults([]);
     setActiveAgents(new Set());
     setSearchResults(null);
@@ -552,15 +568,36 @@ function Shell({ initialView, className }: AppShellProps) {
       () => [
         { binding: "mod+k", handler: () => setPaletteOpen((open) => !open), allowInInput: true },
         { binding: "?", handler: () => setShortcutsOpen(true), shift: true },
-        { binding: "/", handler: () => inputRef.current?.focus(), allowInInput: true },
-        { binding: "mod+enter", handler: () => inputRef.current?.submit(), allowInInput: true },
+        {
+          binding: "/",
+          handler: () => {
+            // The input bar only exists on DASHBOARD / INVESTIGATE, so land on
+            // one of those first when the analyst is elsewhere.
+            if (view !== "dashboard" && view !== "investigate") {
+              navigate("investigate");
+              // Wait for the view to mount before stealing focus.
+              window.setTimeout(() => inputRef.current?.focus(), 0);
+              return;
+            }
+            inputRef.current?.focus();
+          },
+          allowInInput: true,
+        },
+        {
+          binding: "mod+enter",
+          handler: () => {
+            if (view !== "dashboard" && view !== "investigate") return;
+            inputRef.current?.submit();
+          },
+          allowInInput: true,
+        },
         ...VIEWS.map((def) => ({
           binding: def.hotkey,
           handler: () => navigate(def.id),
           shouldPreventDefault: false,
         })),
       ],
-      [navigate],
+      [navigate, view],
     ),
   );
 
@@ -572,7 +609,6 @@ function Shell({ initialView, className }: AppShellProps) {
 
   const opsecLabel = health === "down" ? "backend offline" : health === null ? "checking" : health;
   const report = investigation?.report ?? null;
-  const reportTimeline = report?.timeline ?? [];
   const currentCase = cases.find((c) => c.case_id === caseId) ?? null;
 
   return (
@@ -708,12 +744,13 @@ function Shell({ initialView, className }: AppShellProps) {
                 setFocusEntityId(null);
               }}
               investigation={investigation}
+              focusEntityId={focusEntityId}
             />
           )}
 
           {view === "timeline" && (
             <TimelineView
-              events={reportTimeline}
+              events={timelineEvents}
               entities={entities}
               caseId={caseId}
               onOpenEntity={focusEntityInGraph}
@@ -885,12 +922,21 @@ function normalisePhotoResults(result: {
 
 /* ── Overlays ───────────────────────────────────────────────────────────────── */
 
+/** Views whose shortcut is already declared in `lib/shortcuts.ts`. */
+const SHORTCUT_OWNED_VIEWS: ReadonlySet<string> = new Set(["graph", "timeline", "reports"]);
+
 interface OverlaysProps {
   paletteOpen: boolean;
   onPaletteOpenChange: (open: boolean) => void;
   shortcutsOpen: boolean;
   onShortcutsOpenChange: (open: boolean) => void;
-  views: readonly { id: ViewId; label: string; description: string; icon: string }[];
+  views: readonly {
+    id: ViewId;
+    label: string;
+    description: string;
+    icon: string;
+    hotkey: string;
+  }[];
   onNavigate: (view: ViewId) => void;
   onNewInvestigation: () => void;
   onRotateCircuit: () => void;
@@ -1017,13 +1063,18 @@ function ShellOverlays({
           open={shortcutsOpen}
           onClose={() => onShortcutsOpenChange(false)}
           extraCommands={[
-            ...views.map((def) => ({
-              id: `view.${def.id}`,
-              label: `Go to ${def.label}`,
-              category: "Navigation" as const,
-              keys: [def.id === "dashboard" ? "1" : String(views.indexOf(def) + 1)],
-              description: def.description,
-            })),
+            // graph / timeline / reports are already declared in
+            // lib/shortcuts.ts and rendered by the dialog; adding rows for them
+            // here would show each key twice.
+            ...views
+              .filter((def) => !SHORTCUT_OWNED_VIEWS.has(def.id))
+              .map((def) => ({
+                id: `view.${def.id}`,
+                label: `Go to ${def.label}`,
+                category: "Navigation" as const,
+                keys: [def.hotkey],
+                description: def.description,
+              })),
             {
               id: "investigation.new",
               label: "Clear the current run",

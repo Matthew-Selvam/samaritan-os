@@ -58,6 +58,8 @@ from fastapi import (
     WebSocketDisconnect,
 )
 
+from fastapi.routing import APIRoute
+
 from observability import get_logger, get_metrics, redact
 
 log = get_logger("signal-os.api.ops")
@@ -308,16 +310,32 @@ _WINDOW_S = 60.0
 #: Path fragments mapped onto WS-SEC's named scopes; anything unmatched is
 #: "default". Matched on the longest fragment so `/api/investigate-sync`
 #: resolves to `investigate` rather than something else.
+#:
+#: Only *initiating* work counts as `investigate`. Read-only paths under
+#: `/api/agents` and `/api/investigate/{id}` deliberately stay in the cheap
+#: `default` scope: the dashboard polls those continuously while a run streams,
+#: and charging the 6-rpm investigate budget to a `GET` would 429 a client that
+#: is only watching.
 _SCOPE_RULES: tuple[tuple[str, str], ...] = (
     ("/investigate-sync", "investigate"),
     ("/photo-search", "investigate"),
     ("/name-search", "investigate"),
-    ("/agents/", "investigate"),
+    # No trailing slash: `GET /api/agents` (the bare registry path) must match.
+    # A POST to `/agents/{name}/run` starts real work and is re-routed to the
+    # `investigate` budget in scope_for, so only GETs land on `read`.
+    ("/agents", "read"),
     ("/investigate", "investigate"),
     ("/compare", "search"),
     ("/search", "search"),
     ("/opsec", "opsec"),
 )
+
+#: Suffixes that make an otherwise-expensive path a cheap read. Checked against
+#: the final path segment, so `/api/investigate/{id}` and
+#: `/api/investigate/{id}/report` are reads while `/api/investigate` is not.
+_READ_ONLY_SUFFIXES: frozenset[str] = frozenset({
+    "/report", "/export", "/stats", "/entities", "/timeline",
+})
 
 
 def _rate_settings() -> tuple[int, int]:
@@ -337,16 +355,32 @@ def _rate_settings() -> tuple[int, int]:
     return _int("RATE_LIMIT_RPM", 60), _int("RATE_LIMIT_BURST", 20)
 
 
-def scope_for(path: str) -> str:
-    """Map a request path onto a rate-limit scope.
+def scope_for(path: str, method: str = "GET") -> str:
+    """Map a request onto a rate-limit scope.
 
     Args:
         path: The request path, e.g. ``/api/investigate``.
+        method: The HTTP method. A ``GET`` never consumes the ``investigate``
+            budget: the dashboard polls ``/api/investigate/{id}`` and
+            ``/agents`` continuously while a pipeline runs, and 429-ing a client
+            that is only *watching* would break the live view. Writes to the same
+            paths still pay the full price.
 
     Returns:
         One of ``investigate``/``search``/``read``/``opsec``/``default``.
     """
     target = str(path or "")
+    verb = str(method or "GET").upper()
+    if verb in ("GET", "HEAD", "OPTIONS"):
+        if target.rstrip("/").endswith(tuple(_READ_ONLY_SUFFIXES)):
+            return "read"
+        # A bare /api/investigate/{id} GET is a poll, not an invocation.
+        stripped = target.rstrip("/")
+        if stripped.startswith("/api/investigate/") and stripped.count("/") == 3:
+            return "read"
+    elif target.rstrip("/").endswith("/run"):
+        # POST /agents/{name}/run performs real work (connectors, models).
+        return "investigate"
     best_scope, best_len = "default", 0
     for fragment, scope in _SCOPE_RULES:
         if fragment in target and len(fragment) > best_len:
@@ -405,7 +439,7 @@ def rate_limit_check(request: Request) -> dict[str, Any]:
         ``{"allowed", "headers", "limit", "remaining", "scope"}``. ``headers``
         is safe to spread onto any response.
     """
-    scope = scope_for(request.url.path)
+    scope = scope_for(request.url.path, request.method)
     principal = current_principal(request)
     identity = str(principal.get("id") or "anonymous")
     if identity == "anonymous" and request.client:
@@ -467,6 +501,14 @@ async def rate_limit_dep(request: Request, response: Response) -> dict[str, Any]
     result = rate_limit_check(request)
     for key, value in result["headers"].items():
         response.headers[key] = str(value)
+    # Also record them on request.state: StampingRoute copies these onto the
+    # response FastAPI actually builds, which is the only way the headers
+    # survive a handler that returns a bare dict or list. Reading it from here
+    # (rather than recomputing) keeps one accounting per request.
+    try:
+        request.state.signal_rate_limit = dict(result["headers"])
+    except Exception:  # noqa: BLE001 — header publication is best-effort
+        pass
     if not result["allowed"]:
         get_metrics().incr("api.rate_limit.rejected", tags={"scope": result["scope"]})
         raise HTTPException(
@@ -953,7 +995,7 @@ def install_cors(app: Any) -> list[str]:
     Returns:
         The origins that were allowed.
     """
-    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.middleware.cors import CORSMiddleware  # noqa: PLC0415
 
     origins = cors_origins()
     app.add_middleware(
@@ -976,7 +1018,83 @@ def install_cors(app: Any) -> list[str]:
 # Health / config
 # ════════════════════════════════════════════════════════════════════════════
 
-router = APIRouter(prefix="/api", tags=["ops"])
+class StampingRoute(APIRoute):
+    """Route class that publishes the rate-limit headers on the real response.
+
+    Two problems solved here, both of which made the ``X-RateLimit-*`` headers
+    silently disappear from every endpoint:
+
+    1. A FastAPI dependency can only stamp headers on the *injected* ``Response``
+       placeholder. As soon as a handler returns a plain dict/list — which most
+       of them do — FastAPI builds a fresh response and that placeholder's
+       headers are dropped. Re-applying them here, after the handler has run and
+       the real response exists, is the only reliable place.
+    2. Relying on each handler to opt in means every future handler can forget.
+       Doing it in the route class makes it structural.
+
+    The headers are read from ``request.state.signal_rate_limit``, which
+    ``api.deps.rate_limited`` populates, so this stays compatible with WS-SEC's
+    dependency rather than duplicating its accounting.
+    """
+
+    def get_route_handler(self) -> Callable:
+        """Wrap the handler so the response carries the rate-limit headers.
+
+        Returns:
+            The original handler, wrapped to copy the recorded headers onto the
+            response object it actually returns.
+        """
+        original = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            """Run the endpoint, then publish the recorded rate-limit headers.
+
+            Args:
+                request: The incoming request.
+
+            Returns:
+                The endpoint's response, with ``X-RateLimit-*`` applied.
+            """
+            response = await original(request)
+            headers = getattr(request.state, "signal_rate_limit", None)
+            if isinstance(headers, dict):
+                for key, value in headers.items():
+                    response.headers[key] = str(value)
+            return response
+
+        return handler
+
+
+def guarded_router(*args: Any, **kwargs: Any) -> APIRouter:
+    """Build an ``APIRouter`` that is auth-guarded, rate-limited and stamped.
+
+    The dependencies are passed to the **constructor** rather than appended
+    afterwards on purpose: FastAPI compiles a route's dependant graph at
+    decoration time, so ``router.dependencies.append(...)`` executed at the
+    bottom of a module applies to nothing that was already declared — auth and
+    rate limiting would be silently absent from every route in the file. This
+    factory makes the correct order impossible to get wrong.
+
+    Args:
+        *args: Forwarded to ``APIRouter`` (prefix, tags, ...).
+        **kwargs: Forwarded to ``APIRouter``.
+
+    Returns:
+        A router with :func:`auth_gate` and :func:`rate_limit_dep` applied to
+        every route, using :class:`StampingRoute`.
+    """
+    kwargs.setdefault("route_class", StampingRoute)
+    kwargs["dependencies"] = [
+        *list(kwargs.get("dependencies") or []),
+        Depends(auth_gate),
+        Depends(rate_limit_dep),
+    ]
+    return APIRouter(*args, **kwargs)
+
+
+router = guarded_router(prefix="/api", tags=["ops"])
+# The socket stays at the legacy root path (CONTRACTS.md §10), so it needs no
+# prefix — and no HTTP dependencies, which do not apply to a WebSocket route.
 ws_router = APIRouter(tags=["ops-ws"])
 
 
@@ -1548,8 +1666,6 @@ async def ws_pipeline(websocket: WebSocket, inv_id: str) -> None:
 
 # ── Router-level wiring ──────────────────────────────────────────────────────
 #
-# Auth and rate limiting are applied as router-level dependencies so they cover
-# every route below without repeating the decorator, and so `main.py` cannot
-# accidentally mount an unguarded variant of this router.
-
-router.dependencies.extend([Depends(auth_gate), Depends(rate_limit_dep)])
+# Every router in this package is built with `guarded_router(...)`, so auth and
+# rate limiting are attached in the constructor — before any route is declared —
+# and cannot be silently dropped by declaration order.

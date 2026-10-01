@@ -629,16 +629,26 @@ class SQLiteStore(MemoryStore):
             return [] if fetch else None
         try:
             async with self._write_lock:
-                await self._db.execute(sql, tuple(params))
-                if fetch:
-                    cursor = await self._db.execute(sql, tuple(params))
-                    rows = await cursor.fetchall() if fetch == "all" else await cursor.fetchone()
+                # One execution serves both paths. A previous version executed
+                # the statement once for writes and then again inside the fetch
+                # branch, silently duplicating every fetched row set and every
+                # write when `fetch` was set.
+                cursor = await self._db.execute(sql, tuple(params))
+                try:
+                    if fetch:
+                        rows = await cursor.fetchall() if fetch == "all" else await cursor.fetchone()
+                        return [dict(r) for r in rows] if fetch == "all" else (
+                            dict(rows) if rows else None
+                        )
+                    await self._db.commit()
+                    # `lastrowid` is a *cursor* attribute; `aiosqlite.Connection`
+                    # has no such member. Reading it off the connection raised
+                    # AttributeError, which this method's own handler turned
+                    # into `degrade()` — so every SQLite deployment silently
+                    # lost durability on its first INSERT, logging only an ERROR.
+                    return cursor.lastrowid
+                finally:
                     await cursor.close()
-                    return [dict(r) for r in rows] if fetch == "all" else (
-                        dict(rows) if rows else None
-                    )
-                await self._db.commit()
-                return self._db.lastrowid
         except Exception as exc:  # noqa: BLE001
             log.error("sqlite error on %s (%s) — degrading", sql.split()[0], type(exc).__name__)
             self.degrade(f"{type(exc).__name__} during {sql.split()[0]}")

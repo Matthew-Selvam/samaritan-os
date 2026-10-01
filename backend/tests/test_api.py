@@ -38,6 +38,59 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+# WS-SEC's default `investigate` budget is 6 rpm / burst 2, which several tests
+# here legitimately exceed (each `done_inv` fixture alone submits a run, and the
+# photo-search test submits another). Raise it so only the dedicated rate-limit
+# test — which pins its own budget — ever sees a 429.
+#
+# These are set in this module rather than in conftest.py on purpose: they must
+# not leak into the rest of the suite. Setting them process-wide broke
+# tests/test_security.py's rate-limit contract tests, which assert that the
+# `investigate` scope is *stricter* than `read` — a global override makes it
+# looser and fails them. `restore_limits` puts the real values back.
+_LIMITS_RAISED = {
+    "RATE_LIMIT_SCOPE_RPM.investigate": "600",
+    "RATE_LIMIT_BURST.investigate": "600",
+    "RATE_LIMIT_SCOPE_RPM.search": "600",
+    "RATE_LIMIT_BURST.search": "600",
+}
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _raised_api_limits():
+    """Raise this module's limiter budgets, then restore them exactly.
+
+    Scope is ``module``, so the override is confined to ``test_api.py`` and
+    torn down before any other test module can observe it.
+    """
+    previous = {key: os.environ.get(key) for key in _LIMITS_RAISED}
+    os.environ.update(_LIMITS_RAISED)
+    try:
+        # Buckets capture their limits at construction, so drop the ones built
+        # under the previous env before yielding.
+        _clear_api_buckets()
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        _clear_api_buckets()
+
+
+def _clear_api_buckets() -> None:
+    """Drop every rate-limit bucket so limits are re-read from the env."""
+    try:
+        import rate_limit as rate_limit_module
+    except Exception:  # noqa: BLE001 — optional module
+        return
+    tables = getattr(rate_limit_module, "_BUCKETS", None)
+    if isinstance(tables, dict):
+        for table in tables.values():
+            if isinstance(table, dict):
+                table.clear()
+
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -95,6 +148,15 @@ def client() -> TestClient:
     previous_store = store_mod._store
     os.chdir(BACKEND_ROOT)
 
+    # The routers are genuinely auth-guarded now (auth_gate is in the router
+    # constructor), so the suite must run with auth off or every call 401s.
+    # Patched on the module rather than via env so it holds regardless of the
+    # ambient ENVIRONMENT.
+    import auth as auth_mod
+
+    previous_auth_enabled = auth_mod.auth_enabled
+    auth_mod.auth_enabled = lambda: False
+
     # The routers resolve storage through `runtime.get_store_handle`, which
     # memoises the handle on first use. Installing the memory store has to go
     # through `runtime` too — calling `store.set_store` alone would leave the
@@ -118,6 +180,7 @@ def client() -> TestClient:
             test_client.app_instance = app  # type: ignore[attr-defined]
             yield test_client
     finally:
+        auth_mod.auth_enabled = previous_auth_enabled
         store_mod._store = previous_store
         runtime_mod._STORE = None
         runtime_mod._STORE_READY = False
@@ -154,11 +217,17 @@ def done_inv(client: TestClient) -> dict:
     record: dict = {}
     for _ in range(150):
         response = client.get(f"/api/investigate/{inv_id}")
-        assert response.status_code == 200
+        # Polling a single run legitimately costs many requests, so allow the
+        # documented 429 rather than treating it as a failure: the point of this
+        # fixture is the pipeline's terminal state, not the limiter.
+        if response.status_code == 429:
+            __import__("time").sleep(0.5)
+            continue
+        assert response.status_code == 200, response.text
         record = response.json()
         if record.get("status") in ("done", "error"):
             break
-        asyncio.sleep(0.2) if False else __import__("time").sleep(0.2)
+        __import__("time").sleep(0.2)
 
     assert record.get("status") in ("done", "error"), record
     return {"inv_id": inv_id, "case_id": case_id, "record": record}
@@ -756,17 +825,34 @@ def test_rate_limit_headers_present(client: TestClient) -> None:
 
 
 def test_rate_limit_scope_routing() -> None:
-    """Routes map onto WS-SEC's named scopes, longest fragment winning."""
+    """Routes map onto WS-SEC's named scopes, and reads stay cheap.
+
+    The split matters in practice: the dashboard polls an investigation and the
+    agent registry continuously while a pipeline streams, and charging those
+    polls to the 6-rpm `investigate` budget would 429 a client that is only
+    watching.
+    """
     from api.ops import scope_for
 
-    assert scope_for("/api/investigate") == "investigate"
-    assert scope_for("/api/investigate-sync") == "investigate"
-    assert scope_for("/api/photo-search") == "investigate"
-    assert scope_for("/api/agents/SCOUT/run") == "investigate"
-    assert scope_for("/api/search") == "search"
-    assert scope_for("/api/compare") == "search"
+    # Work initiators pay the expensive budget.
+    assert scope_for("/api/investigate", "POST") == "investigate"
+    assert scope_for("/api/investigate-sync", "POST") == "investigate"
+    assert scope_for("/api/photo-search", "POST") == "investigate"
+    assert scope_for("/api/name-search", "POST") == "investigate"
+    assert scope_for("/api/agents/TERRA/run", "POST") == "investigate"
+    assert scope_for("/api/search", "POST") == "search"
+    assert scope_for("/api/compare", "POST") == "search"
     assert scope_for("/api/opsec/status") == "opsec"
-    assert scope_for("/api/health") == "default"
+
+    # Reads are cheap, including the live-poll paths.
+    assert scope_for("/api/investigate/abc123", "GET") == "read"
+    assert scope_for("/api/investigate/abc123/report", "GET") == "read"
+    assert scope_for("/api/investigate/abc123/export", "GET") == "read"
+    assert scope_for("/api/agents", "GET") == "read"
+    assert scope_for("/api/agents/registry/graph", "GET") == "read"
+    assert scope_for("/api/agents/SCOUT", "GET") == "read"
+    assert scope_for("/api/cases/xyz/entities", "GET") == "read"
+    assert scope_for("/api/health", "GET") == "default"
 
 
 def test_rate_limit_remaining_decrements(client: TestClient) -> None:
@@ -787,8 +873,12 @@ def test_rate_limit_enforced_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("RATE_LIMIT_SCOPE_RPM.default", "3")
     monkeypatch.setenv("RATE_LIMIT_BURST.default", "3")
 
-    import runtime as runtime_mod
+    import auth as auth_mod
     import rate_limit as rl
+    import runtime as runtime_mod
+
+    previous_auth_enabled = auth_mod.auth_enabled
+    auth_mod.auth_enabled = lambda: False
 
     async def _install() -> None:
         import store as sm
@@ -803,18 +893,32 @@ def test_rate_limit_enforced_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> 
 
     _asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_install())
 
-    # A fresh bucket for this identity so the assertion is order-independent.
-    rl.reset_all()
+    # Re-impose a tiny budget on the `investigate` scope for this test only.
+    # `rate_limit.reset_all()` only refills existing buckets — it does not
+    # rebuild them — so the limit captured when the limiter was first created
+    # (with this module's generous defaults) would survive. Clearing the
+    # registry forces the next `get_limiter` call to re-read the env.
+    monkeypatch.setenv("RATE_LIMIT_SCOPE_RPM.investigate", "6")
+    monkeypatch.setenv("RATE_LIMIT_BURST.investigate", "2")
+    rl._BUCKETS["investigate"].clear()
     ops._BUCKETS.clear()
     app = build_app()
     ops.install_cors(app)
-    with TestClient(app) as client:
-        codes = [client.get("/api/health").status_code for _ in range(6)]
-        assert 429 in codes, codes
-        last = client.get("/api/health")
-        assert last.status_code == 429
-        assert "Retry-After" in last.headers
-    ops._BUCKETS.clear()
+    try:
+        with TestClient(app) as client:
+            codes = [client.post("/api/investigate",
+                                 json={"input": f"rl-{i}.example"}).status_code
+                     for i in range(8)]
+            assert 429 in codes, codes
+            limited = client.post("/api/investigate", json={"input": "rl-x.example"})
+            assert limited.status_code == 429
+            assert "Retry-After" in limited.headers
+            # A cheap read scope is unaffected by the investigate budget.
+            assert client.get("/api/health").status_code == 200
+    finally:
+        auth_mod.auth_enabled = previous_auth_enabled
+        rl.reset_all()
+        ops._BUCKETS.clear()
 
 
 # ── websocket ────────────────────────────────────────────────────────────────

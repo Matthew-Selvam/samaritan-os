@@ -33,7 +33,6 @@ leak state.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import socket
 import sys
@@ -214,6 +213,7 @@ def _reset_sync_state():
     """
     _pin_cache_backend()
     _pin_store_backend()
+    _reset_rate_limit_buckets()
     try:
         import cache as cache_module
 
@@ -237,12 +237,44 @@ def _reset_sync_state():
 
     yield
 
+    # Token buckets are keyed by (principal, scope), and an anonymous TestClient
+    # always presents the same identity — so a module that fires many requests
+    # starves the next one and failures start depending on collection order.
+    # `reset_all()` alone only refills existing buckets, which is not enough once
+    # a test has re-read its limits from the env, so the tables are cleared.
+    _reset_rate_limit_buckets()
+
     try:
         import cache as cache_module
 
         cache_module.reset_stats()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _reset_rate_limit_buckets() -> None:
+    """Empty WS-SEC's rate-limit bucket registry (best effort).
+
+    Deliberately forgiving: if ``rate_limit`` is absent or its registry changes
+    shape, isolation degrades silently rather than failing every test in the
+    suite.
+    """
+    try:
+        import rate_limit as rate_limit_module
+    except Exception:  # noqa: BLE001 — optional module
+        return
+    tables = getattr(rate_limit_module, "_BUCKETS", None)
+    if isinstance(tables, dict):
+        for table in tables.values():
+            if isinstance(table, dict):
+                table.clear()
+        return
+    reset = getattr(rate_limit_module, "reset_all", None)
+    if callable(reset):
+        try:
+            reset()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _pin_store_backend() -> str:

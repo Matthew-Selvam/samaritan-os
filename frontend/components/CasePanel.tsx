@@ -93,7 +93,7 @@ export function CasePanel({
           { case_id: caseId ?? undefined, limit },
           { signal: controller.signal, timeout_ms: 15_000 },
         ),
-      "/api/investigations",
+      `/api/investigations${caseId ? `?case_id=${encodeURIComponent(caseId)}` : ""}`,
     )
       .then((items) => {
         if (cancelled) return;
@@ -165,7 +165,11 @@ export function CasePanel({
       ) : error && ordered.length === 0 ? (
         <ErrorState
           compact
-          message={error}
+          message={
+            caseId
+              ? `${error}\n\nThe rail is filtered to case ${caseId}; this backend answered a different route.`
+              : error
+          }
           onRetry={refresh}
           title="Could not load history"
         />
