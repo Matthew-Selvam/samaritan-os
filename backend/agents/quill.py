@@ -1,0 +1,209 @@
+"""
+Quill.py — QUILL Agent
+======================
+"""
+from __future__ import annotations
+
+import asyncio
+from .base import BaseAgent, AgentResult
+
+class QuillAgent(BaseAgent):
+    """Report Generation — deterministic intelligence brief.
+
+    Synthesizes the full investigation (routing, peer agent results, correlation
+    graph, timeline) into a structured Markdown intelligence report and a compact
+    machine-readable summary. Fully deterministic — no LLM call required, so it
+    always produces a report even fully offline. If ReportLab is installed a PDF
+    is rendered to ``context['report_dir']`` as well; otherwise the Markdown stands
+    on its own.
+    """
+    name = "QUILL"; role = "Report Generation"; icon = "⟁"
+    description = "AI-generated intelligence summaries, PDF reports, evidence bundles, graph exports"
+    preferred_models = ["gemma2:9b", "claude-opus-4"]; token_budget = 16384
+
+    async def run(self, input_data, context=None):
+        t0 = self._start_timer()
+        context = context or {}
+        target = input_data if isinstance(input_data, str) else str(input_data)
+        peer_signals: list[dict] = context.get("peer_signals", []) or []
+        peer_entities: list[dict] = context.get("peer_entities", []) or []
+        agent_results: list[dict] = context.get("agent_results", []) or []
+        input_type = context.get("input_type", "unknown")
+        case_id = context.get("case_id", "—")
+
+        self.log(f"generating intelligence report for {input_type} target")
+
+        from datetime import datetime, timezone
+        generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        # ── Signal tallies ────────────────────────────────────────────────────
+        by_type: dict[str, int] = {}
+        for s in peer_signals:
+            by_type[s.get("type", "unknown")] = by_type.get(s.get("type", "unknown"), 0) + 1
+
+        graph = next((r.get("output", {}) for r in agent_results if r.get("agent") == "NEXUS"), {})
+        timeline = next((r.get("output", {}) for r in agent_results if r.get("agent") == "KRONOS"), {})
+
+        completed = [r for r in agent_results if r.get("status") == "done"]
+        errored = [r for r in agent_results if r.get("status") == "error"]
+
+        # ── Markdown report ───────────────────────────────────────────────────
+        lines: list[str] = [
+            f"# Intelligence Report — {target[:80]}",
+            "",
+            f"- **Case ID:** `{case_id}`",
+            f"- **Input type:** {input_type}",
+            f"- **Generated:** {generated}",
+            f"- **Agents completed:** {len(completed)}"
+            + (f" · **errored:** {len(errored)}" if errored else ""),
+            "",
+            "## Executive Summary",
+            "",
+            self._summary(target, input_type, by_type, graph, timeline, agent_results),
+            "",
+            "## Signals Collected",
+            "",
+        ]
+        if by_type:
+            lines += [f"- **{count}× {stype}**" for stype, count in
+                      sorted(by_type.items(), key=lambda kv: -kv[1])]
+        else:
+            lines.append("- _No signals extracted._")
+
+        lines += ["", "## Entities", ""]
+        if peer_entities:
+            seen = set()
+            for e in peer_entities:
+                key = e.get("id") or e.get("label")
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"- **{e.get('label', '?')}** _({e.get('type', 'entity')})_")
+        else:
+            lines.append("- _No entities resolved._")
+
+        if graph.get("top_entities"):
+            lines += ["", "## Correlation — Most Connected", ""]
+            for n in graph["top_entities"]:
+                lines.append(f"- **{n['label']}** — degree {n['degree']}, "
+                             f"influence {n['influence']}")
+            lines.append("")
+            lines.append(f"_Graph: {len(graph.get('nodes', []))} nodes, "
+                         f"{len(graph.get('edges', []))} edges, "
+                         f"{len(graph.get('clusters', []))} cluster(s), "
+                         f"density {graph.get('graph_density', 0)}._")
+
+        events = timeline.get("events", [])
+        if events:
+            lines += ["", "## Timeline", ""]
+            for ev in events:
+                lines.append(f"- `{ev['timestamp'][:10]}` — {ev['label']} "
+                             f"_(via {ev['source']})_")
+
+        lines += ["", "## Agent Activity", ""]
+        for r in agent_results:
+            status = r.get("status", "?")
+            mark = {"done": "✓", "error": "✗", "stub": "◌"}.get(status, "•")
+            lines.append(f"- {mark} **{r.get('agent')}** ({r.get('role', '')}) — "
+                         f"{status}, {r.get('confidence', 0):.0%} conf, "
+                         f"{r.get('latency_s', 0)}s")
+
+        lines += ["", "---", "_Generated by Signal-OS · QUILL · deterministic brief._"]
+        markdown = "\n".join(lines)
+
+        # ── Optional PDF render (best-effort) ─────────────────────────────────
+        pdf_path = None
+        report_dir = context.get("report_dir")
+        if report_dir:
+            try:
+                pdf_path = self._render_pdf(markdown, report_dir, case_id)
+                if pdf_path:
+                    self.log(f"PDF written: {pdf_path}")
+            except Exception as e:
+                self.log(f"PDF render skipped: {e}")
+
+        self.log(f"report ready — {len(peer_signals)} signals, {len(events)} events, "
+                 f"{len(markdown)} chars")
+        return AgentResult(
+            agent=self.name, status="done",
+            output={
+                "markdown": markdown,
+                "signal_tally": by_type,
+                "event_count": len(events),
+                "entity_count": len(peer_entities),
+                "pdf_path": pdf_path,
+                "generated_at": generated,
+            },
+            confidence=0.9 if peer_signals else 0.4,
+            reasoning=f"Compiled brief covering {len(agent_results)} agents, "
+                      f"{len(peer_signals)} signals, {len(events)} timeline events.",
+            signals=[{"type": "report", "format": "markdown",
+                      "length": len(markdown), "pdf": bool(pdf_path), "source": "quill"}],
+            latency_s=self._elapsed(t0),
+        )
+
+    @staticmethod
+    def _summary(target, input_type, by_type, graph, timeline, agent_results=None) -> str:
+        parts = [f"Investigation of `{target[:60]}` classified as **{input_type}**."]
+        # Phone profile (from PHONOS), if present.
+        phone = None
+        for r in (agent_results or []):
+            if r.get("agent") == "PHONOS":
+                phone = (r.get("output") or {}).get("offline", {})
+                break
+        if phone and phone.get("valid"):
+            bits = [b for b in (phone.get("carrier"), phone.get("line_type"),
+                                phone.get("location") or phone.get("region")) if b]
+            parts.append(f"Number is valid ({', '.join(bits)}).")
+        accounts = by_type.get("account", 0)
+        breaches = by_type.get("breach", 0)
+        gps = by_type.get("gps", 0)
+        matches = by_type.get("face_match", 0) + by_type.get("image_match", 0)
+        if accounts:
+            parts.append(f"{accounts} linked account(s) identified across platforms.")
+        if breaches:
+            parts.append(f"Exposure in {breaches} known data breach(es).")
+        if gps:
+            parts.append(f"{gps} geolocation signal(s) recovered from media metadata.")
+        if matches:
+            parts.append(f"{matches} media/face match(es) found via reverse search.")
+        if graph.get("clusters"):
+            parts.append(f"Correlation produced {len(graph['clusters'])} entity cluster(s).")
+        span = timeline.get("span")
+        if span:
+            parts.append(f"Activity timeline spans {span['earliest'][:10]} → "
+                         f"{span['latest'][:10]}.")
+        if len(parts) == 1:
+            parts.append("No corroborating signals were recovered from public sources.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _render_pdf(markdown: str, report_dir: str, case_id: str):
+        """Render Markdown to a simple PDF if ReportLab is available."""
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.lib.units import inch
+            from reportlab.pdfgen import canvas
+        except ImportError:
+            return None
+        import os
+        os.makedirs(report_dir, exist_ok=True)
+        path = os.path.join(report_dir, f"signal-os-report-{case_id}.pdf")
+        c = canvas.Canvas(path, pagesize=letter)
+        width, height = letter
+        y = height - inch
+        for raw in markdown.splitlines():
+            line = raw.replace("**", "").replace("`", "").replace("_", "")
+            if y < inch:
+                c.showPage()
+                y = height - inch
+            font, size = ("Helvetica", 10)
+            if line.startswith("# "):
+                font, size, line = "Helvetica-Bold", 16, line[2:]
+            elif line.startswith("## "):
+                font, size, line = "Helvetica-Bold", 13, line[3:]
+            c.setFont(font, size)
+            c.drawString(inch, y, line[:110])
+            y -= size + 5
+        c.save()
+        return path
