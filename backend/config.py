@@ -50,6 +50,34 @@ REPORTS_DIR = os.getenv("REPORTS_DIR", f"{_default_store_root}/reports")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 
+#: Comma-separated browser origins permitted to call the API.
+#:
+#: Previously this was never read here, so ``main.py``'s
+#: ``getattr(config, "CORS_ORIGINS", "")`` always fell back to the empty
+#: string and the documented variable was silently ignored — every browser
+#: preflight failed with 400 and the dashboard could not reach the backend at
+#: all. An empty value means "no cross-origin browser clients", which is the
+#: safe default; a production deployment must set it explicitly.
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "")
+
+#: Origins permitted to open the pipeline WebSocket. Empty means "same as the
+#: HTTP allowlist behaviour" — the check is skipped, so set this whenever the
+#: API is reachable from a browser.
+WS_ALLOWED_ORIGINS = os.getenv("WS_ALLOWED_ORIGINS", "")
+
+#: Permit outbound fetches to private/loopback addresses. Required only when
+#: SearXNG or SpiderFoot run on the same host in docker-compose. Never enable
+#: this on an internet-facing deployment: it disables the SSRF guard.
+ALLOW_PRIVATE_NETWORK = os.getenv("ALLOW_PRIVATE_NETWORK", "false").lower() in (
+    "true", "1", "yes",
+)
+
+#: Emit structured audit events (investigation lifecycle, auth, case changes).
+AUDIT_LOG = os.getenv("AUDIT_LOG", "true").lower() in ("true", "1", "yes")
+
+#: Version string reported by /api/health.
+VERSION = os.getenv("VERSION", "0.2.0")
+
 # ── OSINT Connectors: API Keys (Optional) ──────────────────────────────────────
 
 SHODAN_API_KEY = os.getenv("SHODAN_API_KEY", "")

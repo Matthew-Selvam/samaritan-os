@@ -70,8 +70,21 @@ def _cors_origins() -> list[str]:
         and never together with credentials — the previous configuration
         shipped ``allow_origins=["*"]`` with ``allow_credentials=True``, which
         is both a wildcard-exposure hole and an invalid combination.
+
+    Raises:
+        Nothing. An unset variable yields an empty list, which blocks
+        cross-origin browsers rather than silently opening the API.
     """
     raw = getattr(config, "CORS_ORIGINS", "") or ""
+    if raw.strip() == "*":
+        if config.DEBUG:
+            return ["*"]
+        log.warning(
+            "CORS_ORIGINS='*' is not honoured outside DEBUG. "
+            "List the browser origins explicitly."
+        )
+        return []
+
     origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
     if origins:
         return origins
@@ -82,6 +95,10 @@ def _cors_origins() -> list[str]:
             "http://localhost:3001",
             "http://127.0.0.1:3000",
             "http://127.0.0.1:3001",
+            "http://127.0.0.1:3021",
+            "http://127.0.0.1:3022",
+            "http://127.0.0.1:3023",
+            "http://127.0.0.1:3024",
         ]
     log.warning("CORS_ORIGINS unset outside debug — browser clients will be blocked")
     return []
