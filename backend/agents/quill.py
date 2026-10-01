@@ -192,15 +192,40 @@ class QuillAgent(BaseAgent):
 
         def add(claim: str, source: str, confidence: float, evidence: list[str],
                 severity: str = "info") -> None:
+            """Append one evidence-backed finding.
+
+            Args:
+                claim: The asserted fact.
+                source: Agent or connector that produced it.
+                confidence: Confidence in ``0.0``–``1.0``.
+                evidence: Supporting citations.
+                severity: One of ``high`` / ``medium`` / ``info``.
+            """
             findings.append({
                 "claim": claim, "source": source,
                 "confidence": round(_conf(confidence), 3),
                 "evidence": evidence[:6], "severity": severity,
             })
 
+        def _attr(rec: dict, key: str) -> Any:
+            """Read a nested ``attrs`` value defensively.
+
+            Signal payloads come from many agents and ``attrs`` is not always a
+            dict, so an unguarded ``.get`` here would lose the whole report.
+
+            Args:
+                rec: Signal or entity record.
+                key: Attribute name.
+
+            Returns:
+                Any: The value, or ``None`` when absent/not a mapping.
+            """
+            nested = rec.get("attrs")
+            return nested.get(key) if isinstance(nested, dict) else None
+
         accounts = by_type.get("account", [])
         if accounts:
-            plats = sorted({str(a.get("platform") or a.get("attrs", {}).get("platform")
+            plats = sorted({str(a.get("platform") or _attr(a, "platform")
                                or "unknown") for a in accounts})
             add(f"{len(accounts)} account(s) attributed to the target across "
                 f"{len(plats)} platform(s): {', '.join(plats[:8])}",
@@ -1207,6 +1232,11 @@ class QuillAgent(BaseAgent):
         table_rows: list[str] = []
 
         def close_table() -> None:
+            """Flush any open table rows into a ``<table>`` element.
+
+            Returns:
+                None
+            """
             nonlocal in_table
             if in_table:
                 body_lines.append("<table>" + "".join(table_rows) + "</table>")

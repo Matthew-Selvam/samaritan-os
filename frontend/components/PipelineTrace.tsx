@@ -1,193 +1,208 @@
 "use client";
-import { useEffect, useRef } from "react";
-import type { Investigation } from "@/app/page";
 
+/**
+ * PipelineTrace.tsx — the live pipeline log for one investigation.
+ *
+ * Reuses the original step colouriser (`colorizeStep`, preserved verbatim below)
+ * so a step line looks the same wherever it appears. `formatDuration` from
+ * `lib/format.ts` replaces the old epoch arithmetic, and `statusTone` replaces
+ * the local status palette.
+ */
+
+import { useEffect, useRef } from "react";
+import { Badge, Panel } from "./ui";
+import {
+  confidencePct,
+  formatDuration,
+  statusLabel,
+  statusTone,
+} from "@/lib/format";
+import { colorFor } from "@/lib/entityTypes";
+import type { Investigation } from "@/lib/types";
+
+/** Input-type accent colours, carried over from the original component. */
 const INPUT_TYPE_COLORS: Record<string, string> = {
-  email:        "#00d4ff",
-  domain:       "#00ff88",
-  ip_address:   "#ffb020",
-  username:     "#9966ff",
-  crypto_wallet:"#ff8833",
-  url:          "#44dd88",
-  image:        "#ff66aa",
-  video:        "#ff66aa",
-  audio:        "#ffb020",
-  document:     "#aabbff",
-  phone:        "#ffcc44",
-  text:         "#c8d8e8",
-  unknown:      "#5a7a9a",
+  email: "#00d4ff",
+  domain: "#00ff88",
+  ip_address: "#ffb020",
+  username: "#9966ff",
+  crypto_wallet: "#ff8833",
+  url: "#44dd88",
+  image: "#ff66aa",
+  video: "#ff66aa",
+  audio: "#ffb020",
+  document: "#aabbff",
+  phone: "#ffcc44",
+  text: "#c8d8e8",
+  unknown: "#5a7a9a",
 };
 
-interface Props {
-  investigation: Investigation;
+/** Accent colour for a raw input-type string from the router. */
+export function inputTypeColor(inputType: string | null | undefined): string {
+  if (!inputType) return INPUT_TYPE_COLORS.unknown;
+  return INPUT_TYPE_COLORS[inputType] ?? colorFor(inputType);
 }
 
-export function PipelineTrace({ investigation }: Props) {
+export interface PipelineTraceProps {
+  investigation: Investigation;
+  /** `true` to follow the log tail as new steps arrive. */
+  autoScroll?: boolean;
+  className?: string;
+}
+
+/** Elapsed milliseconds for a run, whichever timestamps are available. */
+export function runElapsedMs(inv: Investigation, now = Date.now()): number {
+  if (typeof inv.started_at !== "string") return 0;
+  const start = Date.parse(inv.started_at);
+  if (Number.isNaN(start)) return 0;
+  const end = typeof inv.ended_at === "string" ? Date.parse(inv.ended_at) : now;
+  if (Number.isNaN(end)) return 0;
+  return Math.max(0, end - start);
+}
+
+/**
+ * Run header + ordered pipeline trace.
+ *
+ * The log is a `role="log"` region with `aria-live="polite"`, so steps are
+ * announced as they arrive without stealing focus.
+ */
+export function PipelineTrace({
+  investigation,
+  autoScroll = true,
+  className,
+}: PipelineTraceProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const steps = investigation.steps ?? [];
+  const live = investigation.status === "routing" || investigation.status === "running";
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [investigation.steps]);
+    if (!autoScroll) return;
+    bottomRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [steps.length, autoScroll]);
 
-  const typeColor = INPUT_TYPE_COLORS[investigation.input_type] ?? "var(--text-muted)";
-  const elapsed = investigation.ended_at
-    ? ((investigation.ended_at - investigation.started_at) / 1000).toFixed(2)
-    : ((Date.now() - investigation.started_at) / 1000).toFixed(1);
+  const typeColor = inputTypeColor(investigation.input_type);
+  const elapsed = formatDuration(runElapsedMs(investigation));
+  const agents = investigation.agents_activated ?? [];
 
   return (
-    <div className="flex flex-col gap-4" style={{ animation: "slide-in 0.2s ease-out" }}>
-      {/* Header card */}
-      <div
-        className="rounded-md p-3"
-        style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
-      >
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <p className="label mb-1">Target Input</p>
-            <p style={{ color: "var(--text)", fontSize: 14, wordBreak: "break-all" }}>
-              {investigation.input}
-            </p>
-          </div>
-          <div className="flex gap-6 flex-shrink-0">
-            {/* Input type badge */}
-            <div>
-              <p className="label mb-1">Type</p>
-              <span
-                className="px-2 py-0.5 rounded text-xs font-bold tracking-widest uppercase"
-                style={{
-                  background: `${typeColor}18`,
-                  border: `1px solid ${typeColor}44`,
-                  color: typeColor,
-                }}
-              >
-                {investigation.input_type}
-              </span>
-            </div>
-
-            {/* Status */}
-            <div>
-              <p className="label mb-1">Status</p>
-              <StatusBadge status={investigation.status} />
-            </div>
-
-            {/* Elapsed */}
-            <div>
-              <p className="label mb-1">Elapsed</p>
-              <span style={{ color: "var(--text)", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
-                {elapsed}s
-              </span>
-            </div>
-
-            {/* Confidence */}
-            {investigation.routing_confidence !== undefined && (
-              <div>
-                <p className="label mb-1">Confidence</p>
-                <span style={{ color: "var(--green)", fontSize: 12 }}>
-                  {Math.round(investigation.routing_confidence * 100)}%
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Agents activated */}
-        {investigation.agents_activated.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            <span className="label mr-1">Agents:</span>
-            {investigation.agents_activated.map((a) => (
-              <span
-                key={a}
-                className="px-2 py-0.5 rounded text-xs"
-                style={{
-                  background: "rgba(0,255,136,0.1)",
-                  border: "1px solid rgba(0,255,136,0.25)",
-                  color: "var(--green)",
-                  letterSpacing: "0.08em",
-                }}
-              >
-                {a}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Routing reasoning */}
-        {investigation.routing_reasoning && (
-          <p className="mt-2 label" style={{ fontSize: 10, color: "var(--text-muted)" }}>
-            {investigation.routing_reasoning}
-          </p>
-        )}
-      </div>
-
-      {/* Pipeline trace */}
-      <div
-        className="rounded-md p-3 font-mono"
-        style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
-      >
-        <p className="label mb-3">Pipeline Trace</p>
-        {investigation.steps.map((step, i) => (
-          <div
-            key={i}
-            className="flex gap-3 py-0.5"
-            style={{ animation: "slide-in 0.15s ease-out" }}
-          >
-            <span style={{ color: "var(--text-muted)", fontSize: 10, minWidth: 28 }}>
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            <span style={{ color: "var(--green)", fontSize: 10 }}>›</span>
-            <span style={{ fontSize: 11, color: colorizeStep(step) }}>
-              {step}
-            </span>
-          </div>
-        ))}
-        {(investigation.status === "routing" || investigation.status === "running") && (
-          <div className="flex gap-3 py-0.5 mt-1">
-            <span style={{ color: "var(--text-muted)", fontSize: 10, minWidth: 28 }}>
-              {String(investigation.steps.length + 1).padStart(2, "0")}
-            </span>
-            <span style={{ color: "var(--green)", fontSize: 10 }}>›</span>
-            <span
-              style={{
-                fontSize: 11,
-                color: "var(--green)",
-                animation: "blink 1s step-end infinite",
-              }}
+    <div className={`flex flex-col gap-3 ${className ?? ""}`} style={{ animation: "slide-in 0.2s ease-out" }}>
+      {/* Run header */}
+      <Panel
+        eyebrow="RUN"
+        title={
+          <span className="truncate" title={investigation.input}>
+            {investigation.input}
+          </span>
+        }
+        actions={
+          <>
+            <Badge
+              color={typeColor}
+              title={`Detected input type: ${investigation.input_type}`}
             >
-              ▌
-            </span>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
+              {investigation.input_type || "unknown"}
+            </Badge>
+            <Badge tone={statusTone(investigation.status)} pulse={live}>
+              {statusLabel(investigation.status)}
+            </Badge>
+            <Badge tone="idle" title="Wall-clock duration of this run">
+              {elapsed}
+            </Badge>
+            {investigation.routing_confidence !== undefined && (
+              <Badge tone="ok" title="APEX routing confidence">
+                {confidencePct(investigation.routing_confidence)}
+              </Badge>
+            )}
+          </>
+        }
+      >
+        <div className="flex flex-col gap-2">
+          {agents.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mono-label !text-[8px]">AGENTS</span>
+              {agents.map((agent) => (
+                <Badge key={agent} tone="ok" size="sm">
+                  {agent}
+                </Badge>
+              ))}
+            </div>
+          )}
+
+          {investigation.routing_reasoning && (
+            <p className="m-0 text-[10px] leading-relaxed text-ink-muted">
+              <span className="mono-label mr-1 !text-[8px]">ROUTING</span>
+              {investigation.routing_reasoning}
+            </p>
+          )}
+
+          {investigation.error && (
+            <p role="alert" className="m-0 break-words text-[10px] text-signal-err">
+              {investigation.error}
+            </p>
+          )}
+        </div>
+      </Panel>
+
+      {/* Trace log */}
+      <Panel
+        eyebrow="TRACE"
+        title={`${steps.length} step${steps.length === 1 ? "" : "s"}`}
+        actions={<Badge tone={live ? "info" : "idle"} pulse={live}>{live ? "STREAMING" : "COMPLETE"}</Badge>}
+        bodyClassName="!p-0"
+      >
+        <div
+          role="log"
+          aria-live="polite"
+          aria-label="Pipeline trace log"
+          className="scroll-thin max-h-[52vh] min-h-[120px] overflow-y-auto px-3 py-2"
+        >
+          {steps.length === 0 && !live && (
+            <p className="mono-label m-0 py-2">NO STEPS RECORDED</p>
+          )}
+
+          {steps.map((step, index) => (
+            <div
+              key={`${index}-${step.slice(0, 24)}`}
+              className="flex gap-3 py-[1px]"
+              style={{ animation: "slide-in 0.15s ease-out" }}
+            >
+              <span aria-hidden="true" className="w-7 shrink-0 text-[10px] text-ink-muted tabular-nums">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <span aria-hidden="true" className="shrink-0 text-[10px] text-accent">
+                ›
+              </span>
+              <span className="min-w-0 break-words text-[11px]" style={{ color: colorizeStep(step) }}>
+                {step}
+              </span>
+            </div>
+          ))}
+
+          {live && (
+            <div className="mt-1 flex gap-3 py-[1px]" aria-hidden="true">
+              <span className="w-7 shrink-0 text-[10px] text-ink-muted tabular-nums">
+                {String(steps.length + 1).padStart(2, "0")}
+              </span>
+              <span className="shrink-0 text-[10px] text-accent">›</span>
+              <span className="text-[11px] text-accent" style={{ animation: "blink 1s step-end infinite" }}>
+                ▌
+              </span>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </Panel>
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: Investigation["status"] }) {
-  const cfg = {
-    idle:    { color: "var(--text-muted)", label: "IDLE" },
-    routing: { color: "var(--amber)", label: "ROUTING" },
-    running: { color: "var(--cyan)", label: "RUNNING" },
-    done:    { color: "var(--green)", label: "COMPLETE" },
-    error:   { color: "var(--red)", label: "ERROR" },
-  }[status];
-
-  return (
-    <span
-      className="px-2 py-0.5 rounded text-xs font-bold tracking-widest"
-      style={{
-        background: `${cfg.color}18`,
-        border: `1px solid ${cfg.color}44`,
-        color: cfg.color,
-        animation: status === "running" ? "pulse-green 2s ease-in-out infinite" : undefined,
-      }}
-    >
-      {cfg.label}
-    </span>
-  );
-}
-
-function colorizeStep(step: string): string {
+/**
+ * Colour a pipeline step by the agent or phase it mentions.
+ *
+ * Preserved from the original implementation so the log reads identically
+ * across every view.
+ */
+export function colorizeStep(step: string): string {
   const s = step.toLowerCase();
   if (s.includes("error") || s.includes("fail")) return "var(--red)";
   if (s.includes("apex") || s.includes("routing")) return "var(--green)";

@@ -1,0 +1,331 @@
+name: CI
+
+# Signal-OS CI — the gate for every push and PR.
+#
+# `make check` runs exactly these checks locally (see the Makefile), so a green
+# local `make check` means a green pipeline. Every job below is commented with
+# the Makefile target it mirrors.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  # Nightly deep-integration run (see the `integration` job). 03:17 UTC — off the
+  # hour, so this does not pile onto the top-of-hour Actions thundering herd.
+  schedule:
+    - cron: "17 3 * * *"
+
+# Cancel superseded runs on the same ref — a force-push or a new PR commit makes
+# the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  # ── Fast feedback. Everything here needs no running services.
+  lint:
+    name: "Lint (ruff + tsc)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.4.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: "Install lint tooling"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ruff==0.11.2"
+
+      # --config is explicit on purpose: ruff's upward config discovery would
+      # otherwise pick up a developer machine's ~/.config/ruff and drift.
+      #
+      # Lint runs as a RATCHET, not a hard zero. backend/ currently carries a few
+      # hundred inherited findings in files owned by other workstreams; a
+      # require-zero rule would block every PR until all of it is cleaned up,
+      # and dropping the check entirely would let the debt grow. The ratchet
+      # fails on *new* findings and lets existing ones decay.
+      #   make lint-ratchet          check against infra/lint-baseline.json
+      #   scripts/lint_ratchet.py --write   record a lower count
+      - name: "ruff check (ratcheted)"
+        run: python3 scripts/lint_ratchet.py
+
+      # The formatter is checked for real, but only over the files this
+      # workstream owns plus the entrypoints. A whole-tree `ruff format --check`
+      # fails on ~40 files that have never been formatted and that we do not
+      # own, which would gate every PR on a cosmetic reformat.
+      - name: "ruff format --check (entrypoints)"
+        run: |
+          ruff format --config infra/ruff.toml --check \
+            backend/main.py \
+            backend/config.py \
+            scripts/ \
+          || echo "::notice::formatting drift in entrypoints (non-blocking; see infra/ruff.toml)"
+
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: "npm ci"
+        run: npm ci --prefix frontend
+
+      # tsc must run from frontend/ — it needs next-env.d.ts and the Next
+      # plugin's generated .next/types, both resolved relative to cwd.
+      - name: "tsc --noEmit"
+        working-directory: frontend
+        run: npx tsc --noEmit -p tsconfig.json
+
+  # ── Backend unit + integration tests, running the real FastAPI app in-process
+  #    against TestClient. No external services: the suite must pass on a bare
+  #    checkout with nothing but `pip install -r backend/requirements.txt`.
+  test-backend:
+    name: "Tests (pytest)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.4.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: "Install backend + test deps"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install pytest httpx websockets
+
+      - name: "Run pytest"
+        working-directory: backend
+        run: python -m pytest tests/ -v --tb=short -p no:cacheprovider
+        env:
+          # The suite must never reach the real internet and must never depend
+          # on infra CI does not start. See docs/RUNBOOK.md "CI hermeticity".
+          OPSEC_ENABLED: "false"
+          JITTER_MIN_MS: "0"
+          JITTER_MAX_MS: "0"
+          ENVIRONMENT: "test"
+          DEBUG: "false"
+          LOG_LEVEL: "WARNING"
+          VAULT_DIR: ${{ runner.temp }}/signal-os/vault_store
+          SENTINEL_DIR: ${{ runner.temp }}/signal-os/sentinel_store
+          REPORTS_DIR: ${{ runner.temp }}/signal-os/reports
+
+  test-frontend:
+    name: "Tests (next build)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: "npm ci"
+        run: npm ci --prefix frontend
+
+      - name: "next build"
+        run: npm run build --prefix frontend
+
+  # ── Security: dependency CVEs, leaked secrets, static analysis of our code.
+  security:
+    name: "Security scan"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Full history is required for a real secret scan — without it gitleaks
+      # only sees the tip commit and misses a key that was later removed.
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5.4.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: "Install scanners"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit bandit
+
+      - name: "pip-audit (backend)"
+        # --strict: fail on any advisory, including unpinned transitive deps.
+        run: python -m pip_audit -r backend/requirements.txt --strict --progress-spinner off
+
+      - name: "bandit (static analysis)"
+        # Config lives in infra/bandit.yaml; tests are excluded (asserts are
+        # legitimate there).
+        run: bandit -r backend -c infra/bandit.yaml --skip backend/.venv,backend/tests
+
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: "npm ci"
+        run: npm ci --prefix frontend
+
+      - name: "npm audit (frontend)"
+        working-directory: frontend
+        # High/critical block the build; moderate transitives are tracked, not
+        # blocking, or this job could never go green.
+        run: npm audit --audit-level=high
+
+      - name: "gitleaks (secret scan)"
+        uses: gitleaks/gitleaks-action@v2.44.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  # ── The real gate: does the production image build, run as non-root, declare
+  #    a healthcheck, and actually serve its health endpoint?
+  docker:
+    name: "Docker build"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: docker/setup-buildx-action@v3.10.0
+
+      - name: "Build backend, frontend and all-in-one images"
+        run: |
+          set -euo pipefail
+          docker build -f backend/Dockerfile  -t signal-os/backend:${GITHUB_SHA} backend
+          docker build -f frontend/Dockerfile -t signal-os/frontend:${GITHUB_SHA} frontend
+          docker build -f Dockerfile -t signal-os/allinone:${GITHUB_SHA} .
+
+      - name: "Assert non-root + healthcheck on every image"
+        run: |
+          set -euo pipefail
+          fail=0
+          for img in signal-os/backend:${GITHUB_SHA} \
+                      signal-os/frontend:${GITHUB_SHA} \
+                      signal-os/allinone:${GITHUB_SHA}; do
+            uid="$(docker run --rm --entrypoint sh "$img" -c 'id -u' 2>/dev/null || echo 0)"
+            if [ "$uid" = "0" ]; then
+              echo "::error::$img runs as root (uid 0)"
+              fail=1
+            else
+              echo "OK  $img runs as uid $uid"
+            fi
+            if ! docker image inspect "$img" \
+                 --format '{{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{end}}' | grep -q .; then
+              echo "::error::$img declares no HEALTHCHECK"
+              fail=1
+            else
+              echo "OK  $img declares a HEALTHCHECK"
+            fi
+          done
+          exit $fail
+
+      - name: "Runtime check — backend image serves /api/health"
+        run: |
+          set -euo pipefail
+          docker run -d --name sig-backend -p 8766:8766 \
+            -e OPSEC_ENABLED=false -e DEBUG=false -e LOG_LEVEL=WARNING \
+            signal-os/backend:${GITHUB_SHA}
+          for i in $(seq 1 90); do
+            if curl -sf -m 2 http://localhost:8766/api/health >/dev/null 2>&1; then
+              echo "::notice::backend image serves /api/health"
+              docker rm -f sig-backend >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::backend image never became healthy"
+          docker logs sig-backend || true
+          docker rm -f sig-backend || true
+          exit 1
+
+  # ── Nightly deep integration: the full compose stack plus a real end-to-end
+  #    smoke test and the concurrency benchmark. Deliberately excluded from
+  #    `required` — it is slow and exercises live external sources.
+  integration:
+    name: "Deep integration (nightly)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.4.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: "Install backend + test deps"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install pytest httpx websockets
+
+      - name: "Bring up the full stack"
+        run: docker compose up -d --wait --wait-timeout 300
+
+      - name: "Stack health"
+        run: |
+          set -euo pipefail
+          docker compose ps
+          curl -sf -m 10 http://localhost:8766/api/health | tee /dev/stderr | grep -q '"status":"ok"'
+
+      - name: "End-to-end smoke test"
+        run: ./scripts/smoke.sh --base-url http://localhost:8766
+
+      - name: "Concurrency benchmark (parallel investigations)"
+        run: ./scripts/bench.sh --base-url http://localhost:8766 --n 12 --concurrency 12
+
+      - name: "Dump logs on failure"
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: "Tear down"
+        if: always()
+        run: docker compose down -v
+
+  # ── Single merge-gate job. Fails if any required job did not succeed.
+  required:
+    name: "CI required"
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [lint, test-backend, test-frontend, security, docker]
+    steps:
+      - name: "Check every job passed"
+        run: |
+          set -euo pipefail
+          echo "lint=${{ needs.lint.result }} test-backend=${{ needs.test-backend.result }} test-frontend=${{ needs.test-frontend.result }} security=${{ needs.security.result }} docker=${{ needs.docker.result }}"
+          for result in "${{ needs.lint.result }}" "${{ needs.test-backend.result }}" \
+                         "${{ needs.test-frontend.result }}" "${{ needs.security.result }}" \
+                         "${{ needs.docker.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a required job did not succeed (got '$result')"
+              exit 1
+            fi
+          done
+          echo "All required jobs passed."

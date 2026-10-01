@@ -422,6 +422,10 @@ async def _fetch_impl(
             "timeout": timeout, "headers": req_headers, "params": params,
             "json": json_body, "data": data, "files": files,
             "content": content, "max_bytes": cap,
+            # allow_private MUST be forwarded: without it safe_fetch falls back
+            # to the env default and refuses a connector's explicitly local
+            # target (Ollama on :11434, Qdrant on :6333).
+            "allow_private": allow_private,
         })
         if wssec is not None:
             if wssec.ok and 300 <= wssec.status_code < 400 and wssec.headers.get("location"):

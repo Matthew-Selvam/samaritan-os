@@ -80,3 +80,117 @@ class BaseAgent(ABC):
 
     def _elapsed(self, t0: float) -> float:
         return round(time.time() - t0, 2)
+
+
+# ── Agent helpers (appended) ─────────────────────────────────────────────────
+# Deliberately named ``call_llm`` / ``call_llm_json`` / ``agent_timeout`` rather
+# than ``llm`` / ``llm_json`` / ``timeout`` so this block cannot collide with the
+# LLM-helper block owned by another workstream. Both sets coexist.
+
+async def call_llm(
+    agent: BaseAgent,
+    prompt: str,
+    *,
+    system: str | None = None,
+    timeout: float | None = None,
+    max_tokens: int | None = None,
+    model: str | None = None,
+) -> str | None:
+    """Run one completion through the shared LLM facade.
+
+    Returns the model text, or ``None`` when no provider served the call — the
+    caller then takes its deterministic path. Never raises.
+
+    Args:
+        agent: The calling agent (for the model preference + logging).
+        prompt: The user prompt.
+        system: Optional system prompt.
+        timeout: Seconds; defaults to ``llm.LLM_DEFAULT_TIMEOUT``.
+        max_tokens: Completion budget; defaults to the agent's token budget.
+        model: Model hint; defaults to the agent's first preference.
+    Returns:
+        The completion text, or ``None``.
+    """
+    try:
+        from llm import get_llm
+    except Exception as exc:  # noqa: BLE001 — llm.py is optional
+        agent.log(f"llm unavailable ({type(exc).__name__})")
+        return None
+    try:
+        result = await get_llm().complete(
+            prompt,
+            system=system,
+            model=model or next(iter(agent.preferred_models), None),
+            max_tokens=max_tokens or agent.token_budget,
+            timeout=timeout or 20.0,
+        )
+    except Exception as exc:  # noqa: BLE001 — the AI tier is never load-bearing
+        agent.log(f"llm call failed ({type(exc).__name__})")
+        return None
+    if result.error:
+        agent.log(f"llm offline — using deterministic path")
+        return None
+    return result.text
+
+
+async def call_llm_json(
+    agent: BaseAgent,
+    prompt: str,
+    *,
+    system: str | None = None,
+    timeout: float | None = None,
+    max_tokens: int | None = None,
+    schema_hint: str | None = None,
+) -> dict | list | None:
+    """Run one completion and parse the reply as JSON.
+
+    Returns:
+        The decoded object/array, or ``None`` when the model is unavailable or
+        the reply did not parse. Never raises.
+    """
+    try:
+        from llm import get_llm
+    except Exception as exc:  # noqa: BLE001
+        agent.log(f"llm unavailable ({type(exc).__name__})")
+        return None
+    try:
+        payload = await get_llm().complete_json(
+            prompt,
+            system=system,
+            max_tokens=max_tokens or agent.token_budget,
+            timeout=timeout or 20.0,
+            schema_hint=schema_hint,
+        )
+    except Exception as exc:  # noqa: BLE001
+        agent.log(f"llm json call failed ({type(exc).__name__})")
+        return None
+    if isinstance(payload, dict) and payload.get("error"):
+        return None
+    return payload if isinstance(payload, (dict, list)) else None
+
+
+def agent_timeout(agent_name: str, default: float = 30.0) -> float:
+    """Resolve an agent's configured timeout, defensively.
+
+    ``config`` is being extended concurrently, so a missing attribute or a
+    raising ``get_timeout`` must not take a pipeline down.
+
+    Args:
+        agent_name: Agent name, e.g. ``"PHONOS"``.
+        default: Fallback when config cannot answer.
+    Returns:
+        Seconds allowed for the agent.
+    """
+    try:
+        import config
+        getter = getattr(config, "get_timeout", None)
+        if callable(getter):
+            value = getter(agent_name)
+            if value:
+                return float(value)
+        raw = getattr(config, f"TIMEOUT_{agent_name}", None)
+        if raw:
+            return float(raw)
+        return float(getattr(config, "TIMEOUT_DEFAULT", default))
+    except Exception:  # noqa: BLE001 — never fail a run over a timeout lookup
+        return default

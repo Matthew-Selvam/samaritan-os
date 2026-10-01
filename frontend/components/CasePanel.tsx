@@ -1,254 +1,234 @@
 "use client";
-import { useEffect, useState } from "react";
-import type { Investigation } from "@/app/page";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8766";
+/**
+ * CasePanel.tsx — the recent-investigations rail.
+ *
+ * Data now comes from `lib/api.ts` (`listInvestigations`) instead of a raw
+ * `fetch` against a hardcoded host, and the row/card markup is built from the
+ * shared `Panel`/`Badge` primitives. Keyboard support is real: each row is a
+ * button, the list is announced as a listbox and arrow keys move the selection.
+ */
 
-const INPUT_TYPE_COLORS: Record<string, string> = {
-  email:         "#00d4ff",
-  domain:        "#00ff88",
-  ip_address:    "#ffb020",
-  username:      "#9966ff",
-  crypto_wallet: "#ff8833",
-  url:           "#44dd88",
-  image:         "#ff66aa",
-  video:         "#ff66aa",
-  audio:         "#ffb020",
-  document:      "#aabbff",
-  phone:         "#ffcc44",
-  text:          "#c8d8e8",
-  unknown:       "#5a7a9a",
-};
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listInvestigations } from "@/lib/api";
+import {
+  formatDuration,
+  formatRelativeTime,
+  statusLabel,
+  statusTone,
+  truncate,
+  type Tone,
+} from "@/lib/format";
+import type { Investigation, InvestigationStatus } from "@/lib/types";
+import { Badge, Button, EmptyState, ErrorState, Panel, SkeletonRows } from "./ui";
+import { inputTypeColor } from "./PipelineTrace";
 
-const STATUS_COLOR: Record<Investigation["status"], string> = {
-  idle:    "var(--text-muted)",
-  routing: "var(--amber)",
-  running: "var(--cyan)",
-  done:    "var(--green)",
-  error:   "var(--red)",
-};
-
-function elapsedLabel(inv: Investigation): string {
-  const end  = inv.ended_at ?? Date.now();
-  const secs = Math.round((end - inv.started_at) / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem  = secs % 60;
-  return `${mins}m ${rem}s`;
-}
-
-interface Props {
+export interface CasePanelProps {
   onSelect: (investigation: Investigation) => void;
-  activeId?: string;
+  /** Inv id of the run currently on screen. */
+  activeId?: string | null;
+  /** Restrict the list to one case. */
+  caseId?: string | null;
+  /** How many rows to keep in the DOM. */
+  limit?: number;
+  /** Poll interval in ms; `0` disables polling. */
+  pollMs?: number;
+  className?: string;
+  title?: string;
 }
 
-export function CasePanel({ onSelect, activeId }: Props) {
-  const [cases, setCases] = useState<Investigation[]>([]);
+const STATUS_TONE_FALLBACK: Record<string, Tone> = {
+  queued: "warn",
+  pending: "warn",
+};
+
+/** Tone for any status string the backend might emit. */
+function toneFor(investigation: Investigation): Tone {
+  const status = investigation.status as InvestigationStatus;
+  return statusTone(status) === "idle" && STATUS_TONE_FALLBACK[status]
+    ? STATUS_TONE_FALLBACK[status]
+    : statusTone(status);
+}
+
+/** Duration between two ISO timestamps, in ms. */
+function elapsedLabel(inv: Investigation): string {
+  if (typeof inv.started_at !== "string") return "—";
+  const start = Date.parse(inv.started_at);
+  if (Number.isNaN(start)) return "—";
+  const end =
+    typeof inv.ended_at === "string" ? Date.parse(inv.ended_at) : Date.now();
+  if (Number.isNaN(end)) return "—";
+  return formatDuration(Math.max(0, end - start));
+}
+
+/**
+ * Recent investigations, newest first.
+ *
+ * A failed fetch renders an inline error with retry — never a silent blank
+ * rail — and a live run keeps polling so its status stays current.
+ */
+export function CasePanel({
+  onSelect,
+  activeId = null,
+  caseId = null,
+  limit = 40,
+  pollMs = 5000,
+  className,
+  title = "Recent investigations",
+}: CasePanelProps) {
+  const [rows, setRows] = useState<Investigation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const listRef = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch(`${API}/api/investigations`);
-        if (!res.ok) return;
-        const data: Investigation[] = await res.json();
-        setCases(data.slice().reverse()); // newest first
-      } catch { /* backend not ready */ }
+    const controller = new AbortController();
+    let cancelled = false;
+    setLoading(true);
+    listInvestigations(
+      { case_id: caseId ?? undefined, limit },
+      { signal: controller.signal, timeout_ms: 15_000 },
+    )
+      .then((items) => {
+        if (cancelled) return;
+        setRows(items);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled || controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
     };
+  }, [caseId, limit, nonce]);
 
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => {
+    if (pollMs <= 0) return;
+    const id = window.setInterval(() => setNonce((n: number) => n + 1), pollMs);
+    return () => window.clearInterval(id);
+  }, [pollMs]);
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
-      {/* Header */}
-      <div
-        style={{
-          padding: "10px 12px 8px",
-          borderBottom: "1px solid var(--border)",
-          flexShrink: 0,
-        }}
-      >
-        <p
-          className="label"
-          style={{ fontSize: 9, letterSpacing: "0.12em", color: "var(--text-muted)" }}
-        >
-          PAST INVESTIGATIONS
-        </p>
-        {cases.length > 0 && (
-          <p style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2, opacity: 0.55 }}>
-            {cases.length} case{cases.length !== 1 ? "s" : ""}
-          </p>
-        )}
-      </div>
+  const refresh = useCallback(() => setNonce((n: number) => n + 1), []);
 
-      {/* Case list */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px 8px" }}>
-        {cases.length === 0 ? (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              height: 120,
-              gap: 6,
-              pointerEvents: "none",
-            }}
-          >
-            <div style={{ fontSize: 22, color: "var(--border-hi)", lineHeight: 1 }}>◌</div>
-            <p style={{ fontSize: 10, color: "var(--text-muted)", textAlign: "center" }}>
-              No investigations yet
-            </p>
-          </div>
-        ) : (
-          cases.map((inv) => (
-            <CaseCard
-              key={inv.id}
-              inv={inv}
-              isActive={inv.id === activeId}
-              onSelect={onSelect}
-            />
-          ))
-        )}
-      </div>
-    </div>
+  const ordered = useMemo(
+    () => rows.slice().sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? "")),
+    [rows],
   );
-}
 
-// ── Individual case card ──────────────────────────────────────────────────────
-
-interface CardProps {
-  inv: Investigation;
-  isActive: boolean;
-  onSelect: (inv: Investigation) => void;
-}
-
-function CaseCard({ inv, isActive, onSelect }: CardProps) {
-  const typeColor   = INPUT_TYPE_COLORS[inv.input_type] ?? "var(--text-muted)";
-  const statusColor = STATUS_COLOR[inv.status];
-  const isLive      = inv.status === "running" || inv.status === "routing";
+  const onKeyDown = (event: React.KeyboardEvent<HTMLUListElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const buttons = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-row]") ?? [],
+    );
+    if (buttons.length === 0) return;
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "ArrowDown" ? index + 1 : index - 1;
+    const wrapped = (next + buttons.length) % buttons.length;
+    buttons[wrapped]?.focus();
+  };
 
   return (
-    <div
-      onClick={() => onSelect(inv)}
-      style={{
-        marginBottom: 6,
-        padding:      "8px 10px",
-        borderRadius: 5,
-        background:   isActive ? "rgba(0,255,136,0.06)" : "var(--bg-card)",
-        border:       `1px solid ${isActive ? "var(--border-hi)" : "var(--border)"}`,
-        cursor:       "pointer",
-        transition:   "border-color 0.12s, background 0.12s",
-        position:     "relative",
-      }}
-      onMouseEnter={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.borderColor = "var(--border-hi)";
-          e.currentTarget.style.background  = "rgba(255,255,255,0.03)";
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.borderColor = "var(--border)";
-          e.currentTarget.style.background  = "var(--bg-card)";
-        }
-      }}
-    >
-      {/* Input preview — truncated */}
-      <p
-        style={{
-          fontSize:     11,
-          color:        "var(--text)",
-          overflow:     "hidden",
-          whiteSpace:   "nowrap",
-          textOverflow: "ellipsis",
-          marginBottom: 5,
-          paddingRight: 10,
-          fontFamily:   "var(--font-mono)",
-        }}
-      >
-        {inv.input}
-      </p>
-
-      {/* Meta row */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        {/* input_type badge */}
-        <span
-          style={{
-            fontSize:      8,
-            fontWeight:    700,
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-            padding:       "1px 5px",
-            borderRadius:  3,
-            background:    `${typeColor}18`,
-            border:        `1px solid ${typeColor}44`,
-            color:         typeColor,
-            flexShrink:    0,
-          }}
-        >
-          {inv.input_type}
-        </span>
-
-        {/* Status dot + label */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-          <span
-            style={{
-              width:        5,
-              height:       5,
-              borderRadius: "50%",
-              background:   statusColor,
-              display:      "inline-block",
-              boxShadow:    `0 0 4px ${statusColor}`,
-              animation:    isLive ? "pulse-green 2s ease-in-out infinite" : undefined,
-              flexShrink:   0,
-            }}
-          />
-          <span
-            style={{
-              fontSize:      8,
-              color:         statusColor,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-            }}
+    <Panel
+      title={title}
+      eyebrow="HISTORY"
+      actions={
+        <>
+          <Badge tone="idle">{ordered.length}</Badge>
+          <Button
+            size="sm"
+            variant="ghost"
+            iconLabel="Refresh investigation history"
+            onClick={refresh}
           >
-            {inv.status}
-          </span>
-        </div>
-
-        {/* Spacer */}
-        <span style={{ flex: 1 }} />
-
-        {/* Elapsed */}
-        <span
-          style={{
-            fontSize:           9,
-            color:              "var(--text-muted)",
-            fontVariantNumeric: "tabular-nums",
-            flexShrink:         0,
-          }}
-        >
-          {elapsedLabel(inv)}
-        </span>
-      </div>
-
-      {/* Active indicator — left edge bar */}
-      {isActive && (
-        <div
-          style={{
-            position:     "absolute",
-            left:         0,
-            top:          4,
-            bottom:       4,
-            width:        2,
-            borderRadius: "0 2px 2px 0",
-            background:   "var(--green)",
-            boxShadow:    "0 0 6px var(--green)",
-          }}
+            ⟳
+          </Button>
+        </>
+      }
+      bodyClassName="!p-2"
+      className={className}
+      aria-label={title}
+    >
+      {loading && ordered.length === 0 ? (
+        <SkeletonRows rows={4} height={44} />
+      ) : error && ordered.length === 0 ? (
+        <ErrorState
+          compact
+          message={error}
+          onRetry={refresh}
+          title="Could not load history"
         />
+      ) : ordered.length === 0 ? (
+        <EmptyState
+          compact
+          glyph="◌"
+          title="NO INVESTIGATIONS YET"
+          description="Run a target from the input bar; completed runs appear here."
+        />
+      ) : (
+        <ul
+          ref={listRef}
+          aria-label="Recent investigations"
+          onKeyDown={onKeyDown}
+          className="scroll-thin flex max-h-full flex-col gap-1.5 overflow-y-auto"
+        >
+          {ordered.map((inv) => {
+            const active = Boolean(activeId) && inv.inv_id === activeId;
+            const live = inv.status === "running" || inv.status === "routing";
+            const tone = toneFor(inv);
+            const typeColor = inputTypeColor(inv.input_type);
+            return (
+              <li key={inv.inv_id} className="min-w-0">
+                <button
+                  type="button"
+                  data-row
+                  onClick={() => onSelect(inv)}
+                  aria-current={active ? "true" : undefined}
+                  title={inv.input}
+                  className="focus-ring relative w-full min-w-0 rounded border px-2 py-1.5 text-left transition-colors"
+                  style={{
+                    background: active ? "rgba(0,255,136,0.06)" : "var(--bg-card)",
+                    borderColor: active ? "var(--border-hi)" : "var(--border)",
+                  }}
+                >
+                  <span
+                    className="block truncate text-[11px] text-ink"
+                    style={{ paddingRight: 6 }}
+                  >
+                    {truncate(inv.input, 44)}
+                  </span>
+                  <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <Badge color={typeColor}>{inv.input_type || "unknown"}</Badge>
+                    <Badge tone={tone} pulse={live}>
+                      {statusLabel(inv.status)}
+                    </Badge>
+                    <span className="mono-label ml-auto !text-[8px] tabular-nums">
+                      {elapsedLabel(inv)}
+                    </span>
+                  </span>
+                  <span className="mono-label mt-1 block !text-[8px]">
+                    {inv.started_at ? formatRelativeTime(inv.started_at) : "—"}
+                    {inv.case_id ? ` · ${inv.case_id}` : ""}
+                  </span>
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute bottom-1 left-0 top-1 w-[2px] rounded-r bg-accent"
+                      style={{ boxShadow: "0 0 6px var(--green)" }}
+                    />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
-    </div>
+    </Panel>
   );
 }

@@ -1,0 +1,136 @@
+# Dependabot — keeps every dependency stream current.
+#
+# Grouped so that a routine patch sweep produces a handful of reviewable PRs
+# instead of forty. Each ecosystem targets the lockfile/manifest that is
+# actually authoritative for this repo:
+#   pip         -> backend/requirements.txt (the only Python manifest)
+#   npm         -> frontend/package-lock.json (the real app; the root MUI
+#                  package.json is a legacy duplicate being removed)
+#   github-actions -> .github/workflows/*.yml
+#   docker      -> the three Dockerfiles (base images, incl. build args)
+version: 2
+
+updates:
+  # ── Python: backend runtime + test tooling.
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 8
+    labels:
+      - "dependencies"
+      - "python"
+    # Patch + minor are grouped so they land as a single reviewable PR. Majors
+    # stay ungrouped on purpose: langgraph/langchain-core have both had
+    # breaking 1.x transitions that need a human reading the changelog.
+    groups:
+      python-patch:
+        update-types:
+          - "patch"
+      python-minor:
+        update-types:
+          - "minor"
+
+  # ── JS: the real frontend only.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 8
+    labels:
+      - "dependencies"
+      - "javascript"
+    groups:
+      # Next.js minors can change router/build behaviour; grouping keeps them
+      # reviewable as one PR instead of one PR per patch release.
+      next-patch:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - "patch"
+          - "minor"
+      deps-patch:
+        update-types:
+          - "patch"
+      deps-minor:
+        update-types:
+          - "minor"
+
+  # ── CI/CD plumbing: the stream that silently rots if ignored, because a
+  #    stale checkout action is a supply-chain hole.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # ── Base images: python, node, postgres, redis, neo4j, qdrant, minio, tor,
+  #    searxng across all three Dockerfiles. Keeps CVE fixes in the runtime
+  #    base flowing automatically.
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      docker:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      docker:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      docker:
+        patterns:
+          - "*"

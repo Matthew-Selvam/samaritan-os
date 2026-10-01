@@ -1,0 +1,29 @@
+# .dockerignore for the frontend-only build context.
+#
+# The repo-root .dockerignore already covers most of this, but `docker build
+# ./frontend` uses THIS file (Docker looks for .dockerignore in the build
+# context root). It must be strict: this context is uploaded to the daemon in
+# full, and a stray node_modules here is a 500MB+ upload per build.
+
+node_modules
+.next
+out
+.turbo
+turbo
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.github
+.gitattributes
+.DS_Store
+Thumbs.db
+*.log
+
+# Runtime/test output
+coverage
+.nyc_output
+.vercel

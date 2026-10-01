@@ -1,111 +1,181 @@
 "use client";
-import { useState, useEffect } from "react";
 
-const AGENT_COUNT = 14;
-const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8766";
+/**
+ * TopBar.tsx — persistent application chrome: brand, view nav, health, clock
+ * and the case selector.
+ *
+ * Health is a single shared fetch owned by the shell and passed down, so the
+ * top bar, the rail and the OPS view never poll `/api/health` independently.
+ */
 
-interface Props {
-  activeTab?: string;
-  onTabChange?: (tab: string) => void;
+import { useEffect, useState } from "react";
+import { Badge, Button, Select, Tooltip } from "./ui";
+import { StatusDot } from "./StatusDot";
+import { formatTimestamp } from "@/lib/format";
+import { VIEWS, type ViewId } from "@/lib/views";
+import type { Case, HealthLevel } from "@/lib/types";
+
+export interface TopBarProps {
+  view: ViewId;
+  onViewChange: (view: ViewId) => void;
+  /** `null` while health is unknown. */
+  health: HealthLevel | null;
+  healthDetail?: string;
+  /** Cases for the selector. */
+  cases?: readonly Case[];
+  /** Currently bound case id, or `null` for "no case". */
+  caseId?: string | null;
+  onCaseChange?: (caseId: string | null) => void;
+  onOpenPalette?: () => void;
+  onOpenShortcuts?: () => void;
+  /** Number of agents registered, shown in the chrome. */
+  agentCount?: number;
+  className?: string;
 }
 
-const CLICKABLE_TABS = new Set(["INVESTIGATE", "GRAPH"]);
+const HEALTH_TONE = { ok: "ok", degraded: "warn", down: "err" } as const;
 
-export function TopBar({ activeTab = "INVESTIGATE", onTabChange }: Props) {
-  const [connected, setConnected] = useState(false);
-  const [time, setTime] = useState("");
+const HEALTH_TEXT = {
+  ok: "BACKEND ONLINE",
+  degraded: "BACKEND DEGRADED",
+  down: "BACKEND OFFLINE",
+} as const;
+
+/**
+ * The application top bar.
+ *
+ * The nav is a row of real buttons so it is fully keyboard reachable; the clock
+ * is `aria-hidden` because it changes every second and would otherwise spam a
+ * screen reader.
+ */
+export function TopBar({
+  view,
+  onViewChange,
+  health,
+  healthDetail,
+  cases = [],
+  caseId = null,
+  onCaseChange,
+  onOpenPalette,
+  onOpenShortcuts,
+  agentCount,
+  className,
+}: TopBarProps) {
+  const [now, setNow] = useState<string>("");
 
   useEffect(() => {
-    const tick = () => setTime(new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC");
+    const tick = () => setNow(formatTimestamp(new Date()));
     tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const check = async () => {
-      try {
-        await fetch(`${BACKEND}/api/health`);
-        setConnected(true);
-      } catch {
-        setConnected(false);
-      }
-    };
-    check();
-    const id = setInterval(check, 10000);
-    return () => clearInterval(id);
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
   }, []);
 
   return (
     <header
-      className="flex items-center justify-between px-4 h-10 border-b flex-shrink-0"
-      style={{ borderColor: "var(--border)", background: "var(--bg-panel)" }}
+      className={`flex shrink-0 items-center gap-3 border-b border-border-subtle bg-surface-1 px-3 py-1.5 ${
+        className ?? ""
+      }`}
     >
-      {/* Left — brand */}
-      <div className="flex items-center gap-3">
+      {/* Brand */}
+      <div className="flex shrink-0 items-center gap-2">
         <span
-          style={{ color: "var(--green)", fontSize: 16, textShadow: "0 0 8px var(--green)" }}
+          aria-hidden="true"
+          className="text-[16px] text-accent"
+          style={{ textShadow: "0 0 8px var(--green)" }}
         >
           ⊕
         </span>
-        <span
-          className="tracking-[0.25em] font-bold"
-          style={{ color: "var(--green)", fontSize: 12 }}
-        >
+        <span className="font-mono text-[12px] font-bold tracking-[0.25em] text-accent">
           SIGNAL-OS
         </span>
-        <span className="label" style={{ fontSize: 9 }}>
-          v0.1.0-alpha
-        </span>
+        <span className="mono-label hidden !text-[8px] lg:inline">v0.1.0-alpha</span>
       </div>
 
-      {/* Centre — nav tabs */}
-      <nav className="flex gap-1">
-        {["INVESTIGATE", "GRAPH", "TIMELINE", "REPORTS", "MONITOR"].map((tab) => {
-          const isActive  = tab === activeTab;
-          const clickable = CLICKABLE_TABS.has(tab);
+      {/* View navigation */}
+      <nav
+        aria-label="Primary views"
+        className="scroll-thin hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto xl:flex"
+      >
+        {VIEWS.map((def) => {
+          const active = def.id === view;
           return (
             <button
-              key={tab}
-              onClick={() => clickable && onTabChange?.(tab)}
-              className="px-3 py-1 rounded text-xs tracking-widest transition-colors"
-              style={{
-                color:      isActive ? "var(--green)" : "var(--text-muted)",
-                background: isActive ? "rgba(0,255,136,0.08)" : "transparent",
-                border:     `1px solid ${isActive ? "var(--border-hi)" : "transparent"}`,
-                cursor:     clickable ? "pointer" : "default",
-                opacity:    clickable ? 1 : 0.45,
-              }}
+              key={def.id}
+              type="button"
+              onClick={() => onViewChange(def.id)}
+              aria-current={active ? "page" : undefined}
+              title={`${def.description}  (${def.hotkey})`}
+              className={`focus-ring shrink-0 rounded border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] transition-colors ${
+                active
+                  ? "border-accent/50 bg-accent/10 text-accent"
+                  : "border-transparent text-ink-muted hover:text-ink"
+              }`}
             >
-              {tab}
+              {def.label}
             </button>
           );
         })}
       </nav>
 
-      {/* Right — system info */}
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-1.5">
-          <span
-            className="rounded-full"
-            style={{
-              width: 6, height: 6,
-              background: connected ? "var(--green)" : "var(--red)",
-              boxShadow: connected ? "0 0 6px var(--green)" : "0 0 6px var(--red)",
-              display: "inline-block",
-              animation: connected ? "pulse-green 2s ease-in-out infinite" : undefined,
-            }}
+      {/* Right cluster */}
+      <div className="flex shrink-0 items-center gap-2">
+        {onOpenPalette && (
+          <Button size="sm" variant="ghost" onClick={onOpenPalette} title="Command palette (⌘K)">
+            <span aria-hidden="true">⌘</span>K
+          </Button>
+        )}
+
+        {onCaseChange && (
+          <label className="hidden items-center gap-1 md:flex">
+            <span className="mono-label !text-[8px]">CASE</span>
+            <Select
+              aria-label="Active case"
+              value={caseId ?? ""}
+              onChange={(event) => onCaseChange(event.target.value || null)}
+              className="!w-[150px] !py-0.5 !text-[10px]"
+            >
+              <option value="">— none —</option>
+              {cases.map((item) => (
+                <option key={item.case_id} value={item.case_id}>
+                  {item.name}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
+
+        {agentCount !== undefined && agentCount > 0 && (
+          <Badge tone="idle" title="Registered specialist agents">
+            {agentCount} AGENTS
+          </Badge>
+        )}
+
+        <Tooltip label={healthDetail ?? HEALTH_TEXT[health ?? "degraded"]} side="bottom">
+          <StatusDot
+            tone={health ? HEALTH_TONE[health] : "idle"}
+            dotOnly
+            pulse={health === "ok"}
+            label={HEALTH_TEXT[health ?? "degraded"]}
           />
-          <span className="label" style={{ fontSize: 9 }}>
-            {connected ? "BACKEND ONLINE" : "BACKEND OFFLINE"}
-          </span>
-        </div>
-        <span className="label" style={{ fontSize: 9, color: "var(--text-muted)" }}>
-          {AGENT_COUNT} AGENTS
+        </Tooltip>
+
+        <span
+          aria-hidden="true"
+          className="hidden tabular-nums text-[9px] text-ink-muted 2xl:inline"
+        >
+          {now}
         </span>
-        <span className="label" style={{ fontSize: 9, fontVariantNumeric: "tabular-nums" }}>
-          {time}
-        </span>
+
+        {onOpenShortcuts && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onOpenShortcuts}
+            iconLabel="Keyboard shortcuts (?)"
+          >
+            ?
+          </Button>
+        )}
       </div>
     </header>
   );

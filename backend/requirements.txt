@@ -1,7 +1,12 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
-httpx>=0.27.0
+# [socks] pulls in socksio. Without it, every OPSEC-routed request raises
+# ImportError ("Using SOCKS proxy, but the 'socksio' package is not
+# installed") the moment OPSEC_ENABLED=true — i.e. the Tor layer in
+# opsec.py/opsec_config.py is dead code on a default install. Do not drop
+# the extra: it is what makes the OPSEC layer functional rather than fiction.
+httpx[socks]>=0.27.0
 python-multipart>=0.0.9
 celery>=5.4.0
 redis>=5.0.0
@@ -11,6 +16,17 @@ qdrant-client>=1.9.0
 langgraph>=0.1.0
 langchain-core>=0.2.0
 python-dotenv>=1.0.0
+# aiosqlite is the store's zero-config default backend (store.build_store picks
+# SQLite whenever DATABASE_URL is not a Postgres URL). Without it every
+# deployment silently degrades to the in-memory store and nothing persists
+# across restarts. The module degrades gracefully if it is missing, so it is
+# listed here as a hard requirement rather than an optional extra.
+aiosqlite>=0.20.0
+# Test dependencies for the infrastructure suite (backend/tests/).
+# pytest-asyncio is required by the security suite's local-HTTP-server tests
+# (async safe_fetch coverage) as well as the async pipeline tests.
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
 # OSINT connectors
 shodan>=1.31.0
 sherlock-project>=0.14.0

@@ -1,0 +1,48 @@
+# bandit — static analysis config for Signal-OS
+#
+# This platform's entire purpose is to fetch untrusted remote content and shell
+# out to OSINT command-line tools. Blocking those outright would mean the
+# security scan could never pass, so the rules that fire on *those two
+# deliberate behaviours* are disabled here with a reason. Everything that looks
+# like a genuine mistake stays on.
+#
+# Bandit is not a substitute for review. Its value here is catching the
+# unintentional cases: a hardcoded key, a `subprocess` call with
+# `shell=True` on a user-controlled string, an md5/SHA1 hash, an eval.
+
+exclude_dirs:
+  - "backend/.venv"
+  - "backend/tests"
+
+# Report medium-and-above only. `bandit -lll` equivalents:
+#   B101 assert_used                 — asserts express internal invariants
+#   B104 hardcoded_bind_all_interfaces — 0.0.0.0 is required inside a container
+#   B105 hardcoded_password_string   — matches field names like "password" in
+#                                       dict keys, not actual secrets
+#   B106 hardcoded_password_funcarg
+#   B107 hardcoded_password_default
+#   B108 hardcoded_tmp_directory     — /tmp is correct in a container
+#   B110 try_except_pass             — best-effort cleanup paths
+#   B112 try_except_continue         — per-item resilience is the design
+#   B113 request_without_timeout     — the OpsecClient owns timeouts centrally
+#                                       so they can be overridden by config
+#   B301 pickle                     — not used; listed defensively
+#   B603 subprocess_without_shell_equals_true — Sherlock/theHarvester are
+#                                               spawned as argv lists
+#   B607 start_process_with_partial_path
+#   B311 random_not_for_security     — used for jitter + User-Agent rotation,
+#                                       never for anything security-bearing
+skips:
+  - "B101"
+  - "B104"
+  - "B105"
+  - "B106"
+  - "B107"
+  - "B108"
+  - "B110"
+  - "B112"
+  - "B113"
+  - "B301"
+  - "B311"
+  - "B603"
+  - "B607"

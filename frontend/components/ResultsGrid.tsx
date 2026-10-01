@@ -1,6 +1,19 @@
 "use client";
 
-interface ResultItem {
+/**
+ * ResultsGrid.tsx — result cards for the photo (IRIS) and name (PRISM) searches.
+ *
+ * The original card designs are preserved (thumbnail + similarity bar for media,
+ * avatar + profile for names); what changed is that similarity is clamped and
+ * never the sole signal, URLs are validated before being rendered as links, and
+ * the grid is built from the shared `Panel` primitive.
+ */
+
+import clsx from "clsx";
+import { EmptyState, Panel } from "./ui";
+
+/** One result row, covering both search-result shapes. */
+export interface ResultItem {
   url?: string;
   title?: string;
   similarity?: number;
@@ -9,14 +22,23 @@ interface ResultItem {
   bio?: string;
   avatar_url?: string;
   source?: string;
+  /** Present on `SearchResultItem` results. */
+  snippet?: string;
+  confidence?: number;
 }
 
-interface Props {
-  results: ResultItem[];
+export interface ResultsGridProps {
+  results: readonly ResultItem[] | null | undefined;
   mode: "photo" | "name";
+  /** Wall-clock search time in seconds. */
   searchTime?: number;
+  /** Called when a card is activated. */
+  onSelect?: (item: ResultItem, index: number) => void;
+  className?: string;
+  title?: string;
 }
 
+/** Similarity colour ramp: strong / medium / weak. */
 function similarityColor(pct: number): string {
   if (pct >= 80) return "var(--green)";
   if (pct >= 50) return "var(--amber)";
@@ -29,6 +51,12 @@ function similarityGlow(pct: number): string {
   return "0 0 8px rgba(255,68,85,0.25)";
 }
 
+/** Clamp an arbitrary similarity into 0..100. */
+function clampSimilarity(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
 function initials(name?: string): string {
   if (!name) return "??";
   return name
@@ -38,360 +66,284 @@ function initials(name?: string): string {
     .join("");
 }
 
-/* ── platform badge ── */
+/** Platform chip. */
 function PlatformBadge({ platform }: { platform?: string }) {
   if (!platform) return null;
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "1px 6px",
-        borderRadius: 3,
-        fontSize: 8,
-        fontWeight: 700,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        color: "var(--cyan)",
-        background: "rgba(0,212,255,0.08)",
-        border: "1px solid rgba(0,212,255,0.2)",
-      }}
-    >
+    <span className="inline-block shrink-0 rounded border border-signal-info/25 bg-signal-info/10 px-1.5 text-[8px] font-bold uppercase tracking-[0.12em] text-signal-info">
       {platform}
     </span>
   );
 }
 
-/* ═══════════════ PHOTO CARD ═══════════════ */
-function PhotoCard({ item }: { item: ResultItem }) {
-  const sim = item.similarity ?? 0;
+/** Only render a link when the URL is actually safe to open. */
+function safeUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ── Media card ─────────────────────────────────────────────────────────────── */
+
+function PhotoCard({
+  item,
+  index,
+  onSelect,
+}: {
+  item: ResultItem;
+  index: number;
+  onSelect?: (item: ResultItem, index: number) => void;
+}) {
+  const sim = clampSimilarity(item.similarity);
+  const href = safeUrl(item.source);
+  const thumb = safeUrl(item.url);
+
   return (
     <div
-      className="flex gap-3 p-3 rounded-lg"
-      style={{
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        transition: "border-color 0.2s ease, box-shadow 0.2s ease",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = "var(--border-hi)";
-        e.currentTarget.style.boxShadow = "0 0 16px rgba(0,212,255,0.04)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "var(--border)";
-        e.currentTarget.style.boxShadow = "none";
-      }}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={onSelect ? () => onSelect(item, index) : undefined}
+      onKeyDown={
+        onSelect
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(item, index);
+              }
+            }
+          : undefined
+      }
+      className={clsx(
+        "focus-ring flex gap-3 rounded-lg p-3 text-left transition-colors",
+        "border border-border-subtle bg-surface-2 hover:border-border-strong",
+        onSelect && "cursor-pointer",
+      )}
+      style={{ animation: "slide-in 0.2s ease-out" }}
     >
-      {/* thumbnail */}
-      <div
-        style={{
-          width: 80,
-          height: 80,
-          borderRadius: 6,
-          overflow: "hidden",
-          flexShrink: 0,
-          background: "var(--bg-panel)",
-          border: "1px solid var(--border)",
-        }}
+      <span
+        aria-hidden="true"
+        className="block shrink-0 overflow-hidden rounded-md border border-border-subtle bg-surface-1"
+        style={{ width: 80, height: 80 }}
       >
-        {item.url ? (
+        {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.url}
-            alt={item.title ?? "result"}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            src={thumb}
+            alt={item.title ?? "Image match"}
+            loading="lazy"
+            className="h-full w-full"
+            style={{ objectFit: "cover" }}
           />
         ) : (
-          <div
-            className="flex items-center justify-center"
-            style={{ width: "100%", height: "100%", color: "var(--text-muted)", fontSize: 20 }}
-          >
+          <span className="flex h-full w-full items-center justify-center text-[20px] text-ink-muted">
             ◻
-          </div>
+          </span>
         )}
-      </div>
+      </span>
 
-      {/* info */}
-      <div className="flex flex-col justify-between flex-1" style={{ minWidth: 0 }}>
-        <div>
-          {item.source && (
+      <span className="flex min-w-0 flex-1 flex-col justify-between">
+        <span className="block min-w-0">
+          {href && (
             <a
-              href={item.source}
+              href={href}
               target="_blank"
               rel="noopener noreferrer"
-              style={{
-                color: "var(--cyan)",
-                fontSize: 10,
-                fontFamily: "var(--font-mono)",
-                textDecoration: "none",
-                display: "block",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.textDecoration = "underline")}
-              onMouseLeave={(e) => (e.currentTarget.style.textDecoration = "none")}
+              onClick={(event) => event.stopPropagation()}
+              className="block truncate text-[10px] text-signal-info no-underline hover:underline"
+              title={href}
             >
-              {item.source}
+              {item.source} ↗
             </a>
           )}
           {item.title && (
-            <span
-              style={{
-                color: "var(--text)",
-                fontSize: 11,
-                display: "block",
-                marginTop: 2,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {item.title}
-            </span>
+            <span className="mt-0.5 block truncate text-[11px] text-ink">{item.title}</span>
           )}
-        </div>
+          {item.snippet && (
+            <span className="mt-0.5 block truncate text-[10px] text-ink-muted">{item.snippet}</span>
+          )}
+        </span>
 
-        <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
-          {/* similarity */}
+        <span className="mt-1 flex items-center gap-2">
           <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              fontWeight: 700,
-              color: similarityColor(sim),
-              textShadow: similarityGlow(sim),
-            }}
+            className="text-[12px] font-bold tabular-nums"
+            style={{ color: similarityColor(sim), textShadow: similarityGlow(sim) }}
           >
             {sim.toFixed(1)}%
           </span>
-          {/* mini bar */}
-          <div
-            style={{
-              flex: 1,
-              height: 3,
-              borderRadius: 2,
-              background: "var(--border)",
-              overflow: "hidden",
-            }}
+          <span
+            role="meter"
+            aria-label="Match similarity"
+            aria-valuenow={Math.round(sim)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="block h-[3px] flex-1 overflow-hidden rounded-full bg-surface-3"
           >
-            <div
-              style={{
-                width: `${Math.min(sim, 100)}%`,
-                height: "100%",
-                borderRadius: 2,
-                background: similarityColor(sim),
-                transition: "width 0.4s ease",
-              }}
+            <span
+              className="block h-full rounded-full transition-[width] duration-500"
+              style={{ width: `${sim}%`, background: similarityColor(sim) }}
             />
-          </div>
+          </span>
           <PlatformBadge platform={item.platform} />
-        </div>
-      </div>
+        </span>
+      </span>
     </div>
   );
 }
 
-/* ═══════════════ NAME CARD ═══════════════ */
-function NameCard({ item }: { item: ResultItem }) {
+/* ── Profile card ───────────────────────────────────────────────────────────── */
+
+function NameCard({
+  item,
+  index,
+  onSelect,
+}: {
+  item: ResultItem;
+  index: number;
+  onSelect?: (item: ResultItem, index: number) => void;
+}) {
+  const href = safeUrl(item.source);
+  const avatar = safeUrl(item.avatar_url);
+
   return (
     <div
-      className="flex gap-3 p-3 rounded-lg"
-      style={{
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        transition: "border-color 0.2s ease, box-shadow 0.2s ease",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = "var(--border-hi)";
-        e.currentTarget.style.boxShadow = "0 0 16px rgba(0,212,255,0.04)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "var(--border)";
-        e.currentTarget.style.boxShadow = "none";
-      }}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={onSelect ? () => onSelect(item, index) : undefined}
+      onKeyDown={
+        onSelect
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(item, index);
+              }
+            }
+          : undefined
+      }
+      className={clsx(
+        "focus-ring flex gap-3 rounded-lg p-3 text-left transition-colors",
+        "border border-border-subtle bg-surface-2 hover:border-border-strong",
+        onSelect && "cursor-pointer",
+      )}
+      style={{ animation: "slide-in 0.2s ease-out" }}
     >
-      {/* avatar */}
-      <div
-        className="flex items-center justify-center flex-shrink-0"
+      <span
+        aria-hidden="true"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-border-strong text-[13px] font-bold"
         style={{
-          width: 44,
-          height: 44,
-          borderRadius: "50%",
-          background: item.avatar_url
-            ? `url(${item.avatar_url}) center/cover no-repeat`
+          background: avatar
+            ? `url(${avatar}) center/cover no-repeat`
             : "linear-gradient(135deg, rgba(0,212,255,0.15), rgba(153,102,255,0.15))",
-          border: "1px solid var(--border-hi)",
           color: "var(--cyan)",
-          fontSize: 13,
-          fontWeight: 700,
-          fontFamily: "var(--font-mono)",
         }}
       >
-        {!item.avatar_url && initials(item.username)}
-      </div>
+        {!avatar && initials(item.username)}
+      </span>
 
-      {/* details */}
-      <div className="flex flex-col flex-1" style={{ minWidth: 0 }}>
-        <div className="flex items-center gap-2">
-          <span
-            style={{
-              color: "var(--text)",
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[12px] font-semibold text-ink">
             {item.username ?? "Unknown"}
           </span>
           <PlatformBadge platform={item.platform} />
-        </div>
+        </span>
 
         {item.bio && (
           <span
+            className="mt-1 block overflow-hidden text-[10px] leading-relaxed text-ink-muted"
             style={{
-              color: "var(--text-muted)",
-              fontSize: 10,
-              marginTop: 3,
-              lineHeight: 1.4,
               display: "-webkit-box",
               WebkitLineClamp: 2,
               WebkitBoxOrient: "vertical",
-              overflow: "hidden",
             }}
           >
             {item.bio}
           </span>
         )}
 
-        {item.source && (
+        {href && (
           <a
-            href={item.source}
+            href={href}
             target="_blank"
             rel="noopener noreferrer"
-            style={{
-              color: "var(--cyan)",
-              fontSize: 9,
-              fontFamily: "var(--font-mono)",
-              textDecoration: "none",
-              marginTop: 3,
-              opacity: 0.7,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              display: "block",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.opacity = "1";
-              e.currentTarget.style.textDecoration = "underline";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.opacity = "0.7";
-              e.currentTarget.style.textDecoration = "none";
-            }}
+            onClick={(event) => event.stopPropagation()}
+            className="mt-1 block truncate text-[9px] text-signal-info/80 no-underline hover:underline"
+            title={href}
           >
-            {item.source}
+            {item.source} ↗
           </a>
         )}
-      </div>
+      </span>
     </div>
   );
 }
 
-/* ═══════════════ MAIN GRID ═══════════════ */
-export function ResultsGrid({ results, mode, searchTime }: Props) {
-  /* ── empty state ── */
-  if (!results || results.length === 0) {
+/**
+ * Grid of search results.
+ *
+ * An empty list renders an explicit empty state rather than a blank area, and
+ * the header always states the count so a truncated render is never ambiguous.
+ */
+export function ResultsGrid({
+  results,
+  mode,
+  searchTime,
+  onSelect,
+  className,
+  title,
+}: ResultsGridProps) {
+  const items = results ?? [];
+
+  if (items.length === 0) {
     return (
-      <div
-        className="flex flex-col items-center justify-center gap-3"
-        style={{ padding: 48, opacity: 0.5 }}
-      >
-        <svg
-          width="36"
-          height="36"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="var(--text-muted)"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="12" cy="12" r="10" />
-          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-        </svg>
-        <span
-          style={{
-            color: "var(--text-muted)",
-            fontSize: 11,
-            letterSpacing: "0.15em",
-            fontWeight: 600,
-          }}
-        >
-          NO RESULTS
-        </span>
-      </div>
+      <Panel className={className} title={title} eyebrow={mode === "photo" ? "IRIS" : "PRISM"}>
+        <EmptyState
+          glyph="⊘"
+          title="NO RESULTS"
+          description={
+            mode === "photo"
+              ? "No visual matches were returned. Try a clearer crop, or run the reverse image search again."
+              : "No profiles matched this name across the searched surfaces."
+          }
+        />
+      </Panel>
     );
   }
 
   return (
-    <div>
-      {/* ── header ── */}
-      <div
-        className="flex items-center justify-between"
-        style={{ marginBottom: 12, padding: "0 2px" }}
-      >
-        <div className="flex items-center gap-2">
-          <span
-            style={{
-              color: "var(--green)",
-              fontSize: 11,
-              fontWeight: 700,
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            {results.length}
-          </span>
-          <span
-            style={{
-              color: "var(--text-muted)",
-              fontSize: 10,
-              letterSpacing: "0.12em",
-              fontWeight: 600,
-            }}
-          >
-            {mode === "photo" ? "IMAGE MATCHES" : "PROFILE MATCHES"}
-          </span>
-        </div>
-
-        {searchTime !== undefined && (
-          <span
-            style={{
-              color: "var(--text-muted)",
-              fontSize: 9,
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            {searchTime.toFixed(2)}s
-          </span>
-        )}
-      </div>
-
-      {/* ── grid ── */}
+    <Panel
+      className={className}
+      title={title ?? (mode === "photo" ? "Image matches" : "Profile matches")}
+      eyebrow={mode === "photo" ? "IRIS" : "PRISM"}
+      actions={
+        <>
+          <span className="text-[11px] font-bold tabular-nums text-accent">{items.length}</span>
+          {typeof searchTime === "number" && Number.isFinite(searchTime) && (
+            <span className="mono-label tabular-nums">{searchTime.toFixed(2)}s</span>
+          )}
+        </>
+      }
+    >
       <div
         className="grid gap-2"
         style={{
-          gridTemplateColumns: mode === "photo"
-            ? "repeat(auto-fill, minmax(320px, 1fr))"
-            : "repeat(auto-fill, minmax(280px, 1fr))",
+          gridTemplateColumns:
+            mode === "photo"
+              ? "repeat(auto-fill, minmax(320px, 1fr))"
+              : "repeat(auto-fill, minmax(280px, 1fr))",
         }}
       >
-        {results.map((item, i) =>
+        {items.map((item, index) =>
           mode === "photo" ? (
-            <PhotoCard key={`photo-${i}`} item={item} />
+            <PhotoCard key={`photo-${index}`} item={item} index={index} onSelect={onSelect} />
           ) : (
-            <NameCard key={`name-${i}`} item={item} />
+            <NameCard key={`name-${index}`} item={item} index={index} onSelect={onSelect} />
           ),
         )}
       </div>
-    </div>
+    </Panel>
   );
 }

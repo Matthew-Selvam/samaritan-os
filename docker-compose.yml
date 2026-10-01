@@ -1,17 +1,146 @@
-version: "3.9"
+# docker-compose.yml — full Signal-OS stack.
+#
+#   Data layer   postgres, redis, neo4j, qdrant, minio, searxng, tor
+#   App layer    backend, frontend, celery-worker, celery-beat
+#
+# Usage:
+#   make up            # the full stack
+#   make dev           # local dev servers, no Docker for the app layer
+#   make up-infra      # data layer only
+#
+# One profile exists:
+#   (default)  everything above
+#   dev        adds a Postgres UI (pgweb) for local work only
+#
+# Every dependee has a HEALTHCHECK and every dependent uses
+# `condition: service_healthy`, so the backend never starts against a
+# half-initialised database. The app is written to degrade gracefully when an
+# optional service is down, but "degrades" is not "ready".
+
+name: signal-os
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared app configuration. `env_file` is optional so `docker compose` works
+# on a fresh clone with no .env at all — every var below has a fallback.
+# ─────────────────────────────────────────────────────────────────────────────
+x-app-env: &app-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  DEBUG: ${DEBUG:-false}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: "${LOG_FORMAT:-%(asctime)s [%(levelname)s] %(name)s: %(message)s}"
+
+  # ── Data layer (service names resolve on the compose network) ──
+  DATABASE_URL: postgresql://${POSTGRES_USER:-signal}:${POSTGRES_PASSWORD:-signal}@postgres:5432/${POSTGRES_DB:-signal_os}
+  REDIS_URL: redis://redis:6379/0
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: ${NEO4J_USER:-neo4j}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+  SEARXNG_URL: http://searxng:8080
+
+  # ── Agent memory stores: named volumes, so `docker compose down` does not
+  #    destroy case history. ──
+  VAULT_DIR: /app/vault_store
+  SENTINEL_DIR: /app/sentinel_store
+  REPORTS_DIR: /app/reports
+
+  # ── OPSEC / Tor ──
+  # socks5h resolves DNS through the proxy (no DNS leak). The `tor` service
+  # below is what actually provides it — without that service this would be a
+  # fiction and every routed request would fail to connect.
+  OPSEC_ENABLED: ${OPSEC_ENABLED:-true}
+  TOR_PROXY: socks5h://tor:9050
+  TOR_CONTROL: tor:9051
+  TOR_PASSWORD: ${TOR_PASSWORD:-}
+
+  # ── Security ──
+  SECRET_KEY: ${SECRET_KEY:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:-*}
+  AUTH_DISABLED: ${AUTH_DISABLED:-false}
+  SIGNAL_API_KEYS: ${SIGNAL_API_KEYS:-}
+  RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-60}
+  RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-10}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+  # false is the safe default: CRAWLER fetches user-supplied URLs, so allowing
+  # private ranges by default would be an SSRF hole.
+  ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-false}
+  AUDIT_LOG: ${AUDIT_LOG:-true}
+
+  # ── LLM providers. All unset = deterministic offline fallback, never a crash. ──
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  LLM_TIMEOUT: ${LLM_TIMEOUT:-60}
+  LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+  LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+  LLM_CIRCUIT_THRESHOLD: ${LLM_CIRCUIT_THRESHOLD:-3}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+
+  # ── OSINT connector keys ──
+  SHODAN_API_KEY: ${SHODAN_API_KEY:-}
+  HIBP_API_KEY: ${HIBP_API_KEY:-}
+  NUMVERIFY_API_KEY: ${NUMVERIFY_API_KEY:-}
+  DEHASHED_EMAIL: ${DEHASHED_EMAIL:-}
+  DEHASHED_API_KEY: ${DEHASHED_API_KEY:-}
+  SPIDERFOOT_URL: ${SPIDERFOOT_URL:-}
+  SPIDERFOOT_TOKEN: ${SPIDERFOOT_TOKEN:-}
+
+  # ── Cache / store tuning ──
+  CACHE_TTL: ${CACHE_TTL:-300}
+  CACHE_MAX_ENTRIES: ${CACHE_MAX_ENTRIES:-10000}
+  STORE_BACKEND: ${STORE_BACKEND:-postgres}
+  CIRCUIT_FAIL_THRESHOLD: ${CIRCUIT_FAIL_THRESHOLD:-5}
+  CIRCUIT_RESET_AFTER: ${CIRCUIT_RESET_AFTER:-30}
+
+  # ── OPSEC request jitter (ms) ──
+  JITTER_MIN_MS: ${JITTER_MIN_MS:-200}
+  JITTER_MAX_MS: ${JITTER_MAX_MS:-2000}
+
+  # ── Per-agent timeouts (seconds) ──
+  TIMEOUT_SCOUT: ${TIMEOUT_SCOUT:-60}
+  TIMEOUT_PHONOS: ${TIMEOUT_PHONOS:-40}
+  TIMEOUT_EMAIL: ${TIMEOUT_EMAIL:-30}
+  TIMEOUT_CRAWLER: ${TIMEOUT_CRAWLER:-20}
+  TIMEOUT_IRIS: ${TIMEOUT_IRIS:-45}
+  TIMEOUT_ECHO: ${TIMEOUT_ECHO:-30}
+  TIMEOUT_TERRA: ${TIMEOUT_TERRA:-10}
+  TIMEOUT_PRISM: ${TIMEOUT_PRISM:-60}
+  TIMEOUT_BREACH: ${TIMEOUT_BREACH:-15}
+
+# Restart policy shared by every long-running service. `unless-stopped` survives
+# a host reboot; a bounded retry count would flap on a transient dependency.
+x-restart: &restart
+  restart: unless-stopped
 
 services:
-  # ── Data layer ─────────────────────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Data layer
+  # ═══════════════════════════════════════════════════════════════════════════
 
   postgres:
+    <<: *restart
     image: postgres:16-alpine
-    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-signal}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-signal}
       POSTGRES_DB: ${POSTGRES_DB:-signal_os}
+      # Deterministic collation, so ORDER BY does not change between hosts.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    command:
+      - postgres
+      # Investigations fan out on writes; the default 100 connections is low
+      # once several workers share one database.
+      - -c
+      - max_connections=200
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,28 +148,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  neo4j:
-    image: neo4j:5-community
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: none
-    ports:
-      - "7474:7474"   # HTTP browser
-      - "7687:7687"   # Bolt
-    volumes:
-      - neo4j_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
+      start_period: 20s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   redis:
+    <<: *restart
     image: redis:7-alpine
-    restart: unless-stopped
+    # Cache and Celery broker. appendonly is on: a lost broker queue means
+    # silently dropped investigations. maxmemory-policy bounds the cache and
+    # evicts rather than letting the kernel OOM-kill the container.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - allkeys-lru
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -48,30 +178,78 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  neo4j:
+    <<: *restart
+    image: neo4j:5.26-community
+    environment:
+      # Authentication is ON. The graph holds the full entity/relationship map
+      # of every investigation — the most sensitive data this platform
+      # produces. The previous configuration ran NEO4J_AUTH=none: an
+      # unauthenticated database holding the case data of every investigation.
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-signalos}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-1G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512m}
+      NEO4J_dbms_connector_bolt_advertised__address: neo4j:7687
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      # cypher-shell with credentials is the real "can I use the DB, with the
+      # auth I configured" check. A plain HTTP probe passes even when auth is
+      # misconfigured, which is exactly the failure this guards against.
+      test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER:-neo4j} -p \"$${NEO4J_PASSWORD}\" 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
   qdrant:
-    image: qdrant/qdrant:latest
-    restart: unless-stopped
+    <<: *restart
+    image: qdrant/qdrant:v1.12.4
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT__LOG_LEVEL: ${QDRANT_LOG_LEVEL:-INFO}
     ports:
-      - "6333:6333"
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   minio:
-    image: minio/minio:latest
-    restart: unless-stopped
+    <<: *restart
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Console
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -79,26 +257,88 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+      start_period: 15s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
-  # ── Application layer ──────────────────────────────────────────────────────
+  searxng:
+    <<: *restart
+    image: searxng/searxng:2024.10.29-6e6b5b1
+    # The JSON format is what the SCOUT connector consumes. The mounted settings
+    # file turns it on; without it searxng returns HTML only and every search
+    # result fails to parse.
+    volumes:
+      - ./infra/searxng:/etc/searxng:ro
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── Tor ────────────────────────────────────────────────────────────────────
+  # This service is what makes OPSEC_ENABLED=true real. Without it, the default
+  # in config.py points TOR_PROXY at a port nothing listens on and every
+  # "anonymised" request fails to connect — the OPSEC layer would be fiction.
+  tor:
+    <<: *restart
+    image: dperson/torproxy:latest
+    environment:
+      # Control port, for POST /api/opsec/newcircuit. Reachable only on the
+      # internal network — 9051 is deliberately NOT published to the host.
+      TOR_CONTROL_PORT: "9051"
+      # Empty disables control-port auth, which is acceptable only because 9051
+      # is not published and the network is a private bridge.
+      TOR_PASSWORD: ${TOR_PASSWORD:-}
+    ports:
+      # SOCKS on the host, for debugging from a laptop. The backend uses the
+      # container network directly.
+      - "${TOR_SOCKS_PORT:-9050}:9050"
+    healthcheck:
+      # Proves the SOCKS port actually relays, not merely that the process
+      # lives. check.torproject.org over SOCKS reports the exit IP; "IsTor true"
+      # in the body is the real assertion.
+      test: ["CMD-SHELL", "curl -fsS --socks5-hostname 127.0.0.1:9050 --max-time 25 https://check.torproject.org/api/ip || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 45s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Application layer
+  # ═══════════════════════════════════════════════════════════════════════════
 
   backend:
+    <<: *restart
     build:
       context: ./backend
       dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-signal}:${POSTGRES_PASSWORD:-signal}@postgres:5432/${POSTGRES_DB:-signal_os}
-      REDIS_URL: redis://redis:6379
-      NEO4J_URI: bolt://neo4j:7687
-      QDRANT_URL: http://qdrant:6333
-      MINIO_ENDPOINT: minio:9000
+    image: signal-os/backend:latest
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
     ports:
-      - "8766:8766"
+      - "${BACKEND_PORT:-8766}:8766"
     volumes:
-      - ./backend:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8766 --reload
+      - vault_data:/app/vault_store
+      - sentinel_data:/app/sentinel_store
+      - reports_data:/app/reports
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,49 +348,174 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+      # service_started, not service_healthy: an operator may deliberately run
+      # OPSEC_ENABLED=false with no Tor at all, and a hard dependency here would
+      # stop the whole stack from starting.
+      tor:
+        condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8766/api/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8766/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    # Graceful stop: the pipeline may have an investigation in flight.
+    stop_grace_period: 120s
 
   frontend:
+    <<: *restart
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    restart: unless-stopped
-    env_file: .env
+      args:
+        # Build-time only. NEXT_PUBLIC_* is inlined into the client bundle, so
+        # it cannot be set at runtime. Empty = same-origin /api, which the
+        # frontend proxies to the backend.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_SIGNAL_API_KEY: ${NEXT_PUBLIC_SIGNAL_API_KEY:-}
+    image: signal-os/frontend:latest
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8766}
+      NODE_ENV: production
+      PORT: "3001"
+      HOSTNAME: "0.0.0.0"
     ports:
-      - "3001:3001"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    command: npm run dev
+      - "${FRONTEND_PORT:-3001}:3001"
+    depends_on:
+      backend:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001 || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
-
-  searxng:
-    image: searxng/searxng:latest
-    restart: unless-stopped
-    ports:
-      - "8888:8080"
-    volumes:
-      - ./infra/searxng:/etc/searxng:ro
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/ || exit 1"]
+      interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 3
+      start_period: 20s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # ── Celery ─────────────────────────────────────────────────────────────────
+  # The spec promises Celery task execution; without a broker and a worker it
+  # is not delivered, so both are here. The backend still falls back to
+  # in-process execution when Redis is unreachable, which is why the worker is
+  # not a hard dependency of the API.
+  celery-worker:
+    <<: *restart
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: signal-os/backend:latest
+    # Same image as the backend, different process.
+    command:
+      - celery
+      - -A
+      - celery_app.celery_app
+      - worker
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      - --concurrency=${CELERY_CONCURRENCY:-2}
+      - -Q
+      - signal_os
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    volumes:
+      - vault_data:/app/vault_store
+      - sentinel_data:/app/sentinel_store
+      - reports_data:/app/reports
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # `celery inspect ping` is the real liveness check: it also proves the
+      # worker joined the queue, which a TCP probe would not.
+      test: ["CMD-SHELL", "celery -A celery_app.celery_app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 45s
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    # Longer than celery_app.py's task_time_limit (600s) so a running
+    # investigation is not SIGKILLed mid-report.
+    stop_grace_period: 660s
+
+  celery-beat:
+    <<: *restart
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: signal-os/backend:latest
+    command:
+      - celery
+      - -A
+      - celery_app.celery_app
+      - beat
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-env
+    volumes:
+      # Its own named volume: a container-local schedule file would reset the
+      # schedule on every restart.
+      - celery_beat_data:/var/lib/celery
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+    networks: [signal-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── dev profile only ───────────────────────────────────────────────────────
+  # A Postgres UI for local work. Excluded from the default profile so it can
+  # never appear in a production `docker compose up`.
+  pgweb:
+    profiles: ["dev"]
+    image: sosedoff/pgweb:latest
+    restart: unless-stopped
+    environment:
+      PGWEB_DATABASE_URL: postgresql://${POSTGRES_USER:-signal}:${POSTGRES_PASSWORD:-signal}@postgres:5432/${POSTGRES_DB:-signal_os}?sslmode=disable
+    ports:
+      - "${PGWEB_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [signal-net]
+
+networks:
+  signal-net:
+    driver: bridge
 
 volumes:
   postgres_data:
-  neo4j_data:
   redis_data:
+  neo4j_data:
+  neo4j_logs:
   qdrant_data:
   minio_data:
+  # Agent memory + case history. `docker compose down` keeps these;
+  # `docker compose down -v` destroys them.
+  vault_data:
+  sentinel_data:
+  reports_data:
+  celery_beat_data:

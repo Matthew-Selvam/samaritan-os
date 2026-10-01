@@ -1,0 +1,109 @@
+# .dockerignore — keep the build context small and free of host state.
+#
+# This matters more than usual for this repo: without it, `docker build` ships
+# the developer's 1GB+ backend/.venv, a populated node_modules, and the live
+# agent memory stores (which contain real investigation data) into the daemon
+# and into every intermediate layer. The stores in particular must never end up
+# baked into a published image.
+
+# ── Version control ─────────────────────────────────────────────────────────
+.git
+.gitignore
+.github/CONTRIBUTING.md
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+# .env is loaded by the app at runtime, never baked into an image. Shipping it
+# would put every API key in a layer anyone with the image can read.
+.env
+.env.*
+!.env.example
+
+# ── Python ──────────────────────────────────────────────────────────────────
+# The venv is host-specific (absolute paths, platform-specific binaries) and is
+# rebuilt inside the image. Including it breaks the build and leaks local state.
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.so
+backend/.venv
+
+# ── Node ────────────────────────────────────────────────────────────────────
+**/node_modules
+**/.next
+**/out
+**/turbo
+**/.turbo
+**/tsconfig.tsbuildinfo
+**/.eslintcache
+.npm
+
+# ── Agent runtime state: real investigation data, never image content ───────
+backend/vault_store
+backend/sentinel_store
+backend/reports
+vault_store
+sentinel_store
+reports
+
+# ── Local dev artefacts ─────────────────────────────────────────────────────
+**/*.log
+logs
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp
+.pytest_cache
+.ruff_cache
+coverage
+.coverage
+coverage.xml
+htmlcov
+
+# ── Build/test output ───────────────────────────────────────────────────────
+dist
+build
+out
+target
+
+# ── Docs and agent context ──────────────────────────────────────────────────
+# Kept out of the runtime image; the deployed container serves the app, not the
+# repo's internal documentation.
+graphify-out
+docs
+*.md
+!README.md
+CLAUDE.md
+AGENTS.md
+LICENSE
+
+# ── Deployment config not needed at runtime ─────────────────────────────────
+# The image is built FROM these; keeping them in context only slows the build.
+vercel.json
+railway.json
+.dockerignore
+.dockerignore-frontend
+Makefile
+docker-compose.yml
+docker-compose.override.yml
+docker-compose.override.yml.example
+
+# ── VCS / CI metadata ───────────────────────────────────────────────────────
+.github/workflows
+.github/ISSUE_TEMPLATE
+
+# ── Keep ────────────────────────────────────────────────────────────────────
+# Explicitly retained (the patterns above are all additive exclusions, so this
+# is belt-and-braces documentation rather than an override):
+#   backend/**/*.py       — the application
+#   backend/requirements.txt
+#   frontend/{app,components,lib,public}/**  — the dashboard
+#   frontend/package.json, package-lock.json
+#   infra/supervisord.conf

@@ -1,245 +1,274 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8766";
+/**
+ * OpsecIndicator.tsx — circuit state chip plus rotation control.
+ *
+ * Talks to `lib/api.ts` (`getOpsecStatus` / `newCircuit`) so the endpoint is
+ * never hardcoded, and normalises both the typed `OpsecStatus` and the legacy
+ * `{connected, mode, exit_country}` shape the older backend returns.
+ */
 
-interface OpsecStatus {
-  connected: boolean;
-  mode: "tor" | "direct" | "checking";
-  exit_country?: string;
-  exit_ip?: string;
-  request_count?: number;
+import { useCallback, useEffect, useState } from "react";
+import { getOpsecStatus, newCircuit } from "@/lib/api";
+import { formatRelativeTime } from "@/lib/format";
+import type { OpsecStatus } from "@/lib/types";
+import { Badge, Button, DefRow, Modal } from "./ui";
+import { StatusDot } from "./StatusDot";
+import type { Tone } from "@/lib/format";
+
+/** Normalised view model over both backend generations. */
+export interface OpsecView {
+  active: boolean;
+  mode: "tor" | "direct" | "unknown";
+  label: string;
+  detail?: string;
+  exitCountry?: string;
+  hops?: number;
+  coverage?: number;
+  startedAt?: string;
+  expiresAt?: string;
+  circuitId?: string;
 }
 
-type StatusLevel = "tor" | "direct" | "checking";
-
-const STATUS_META: Record<StatusLevel, { color: string; label: string; glow: string }> = {
-  tor:      { color: "var(--green)", label: "TOR",      glow: "0 0 6px var(--green)" },
-  direct:   { color: "var(--red)",   label: "DIRECT",   glow: "0 0 6px var(--red)" },
-  checking: { color: "var(--amber)", label: "CHECKING", glow: "0 0 6px var(--amber)" },
+const TONE_BY_MODE: Record<OpsecView["mode"], Tone> = {
+  tor: "ok",
+  direct: "err",
+  unknown: "idle",
 };
 
-export function OpsecIndicator() {
-  const [status, setStatus] = useState<OpsecStatus>({
-    connected: false,
-    mode: "checking",
-  });
-  const [hovered, setHovered] = useState(false);
-  const [requesting, setRequesting] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+const LABEL_BY_MODE: Record<OpsecView["mode"], string> = {
+  tor: "TOR",
+  direct: "DIRECT",
+  unknown: "UNKNOWN",
+};
 
-  /* ── poll opsec status ── */
-  const fetchStatus = useCallback(async () => {
+/**
+ * Fold either `OpsecStatus` shape into {@link OpsecView}.
+ * Never throws — an unreadable payload becomes `unknown` rather than a crash.
+ */
+export function toOpsecView(raw: unknown): OpsecView {
+  if (!raw || typeof raw !== "object") {
+    return { active: false, mode: "unknown", label: "UNKNOWN" };
+  }
+  const rec = raw as Record<string, unknown>;
+  const circuit =
+    rec.circuit && typeof rec.circuit === "object"
+      ? (rec.circuit as Record<string, unknown>)
+      : null;
+
+  // Legacy shape: { connected, mode, exit_country, exit_ip }
+  if (typeof rec.connected === "boolean" && typeof rec.mode === "string") {
+    const legacyMode = rec.mode === "tor" ? "tor" : rec.mode === "direct" ? "direct" : "unknown";
+    return {
+      active: rec.connected && legacyMode === "tor",
+      mode: legacyMode,
+      label: LABEL_BY_MODE[legacyMode],
+      exitCountry: typeof rec.exit_country === "string" ? rec.exit_country : undefined,
+      detail: typeof rec.exit_ip === "string" ? rec.exit_ip : undefined,
+    };
+  }
+
+  const status = rec as unknown as OpsecStatus;
+  const active = status.active === true;
+  const hops = status.hops ?? status.circuit?.hops;
+  const coverage = status.coverage;
+  const mode: OpsecView["mode"] = active ? "tor" : status.circuit_id ? "unknown" : "direct";
+  return {
+    active,
+    mode,
+    label: active ? "TOR" : status.circuit_id ? "CIRCUIT" : LABEL_BY_MODE.direct,
+    detail: status.circuit_label ?? status.circuit?.label ?? undefined,
+    hops,
+    coverage,
+    startedAt: status.started_at ?? status.circuit?.created_at,
+    expiresAt: status.expires_at ?? status.circuit?.expires_at,
+    circuitId: status.circuit_id ?? status.circuit?.id,
+  };
+}
+
+export interface OpsecIndicatorProps {
+  /** Poll interval in ms. */
+  pollMs?: number;
+  /** Shows the circuit-rotation confirmation dialog first. */
+  confirmRotate?: boolean;
+  /** Notified after a successful rotation. */
+  onRotated?: (view: OpsecView) => void;
+  /** Notified when the backend reports a failure. */
+  onError?: (message: string) => void;
+  className?: string;
+}
+
+/**
+ * Live opsec chip.
+ *
+ * Failure is explicit: a poll error marks the chip `unknown` and offers a
+ * retry rather than silently showing "direct" and implying traffic is exposed.
+ */
+export function OpsecIndicator({
+  pollMs = 15_000,
+  confirmRotate = true,
+  onRotated,
+  onError,
+  className,
+}: OpsecIndicatorProps) {
+  const [view, setView] = useState<OpsecView>({ active: false, mode: "unknown", label: "CHECKING" });
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/opsec/status`);
-      if (res.ok) {
-        const data: OpsecStatus = await res.json();
-        setStatus(data);
-      } else {
-        setStatus({ connected: false, mode: "direct" });
-      }
-    } catch {
-      setStatus({ connected: false, mode: "direct" });
+      const status = await getOpsecStatus({ timeout_ms: 10_000 });
+      setView(toOpsecView(status));
+      setPollError(null);
+    } catch (err) {
+      setView((prev) => ({ ...prev, mode: "unknown", label: "UNKNOWN" }));
+      setPollError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
   useEffect(() => {
-    fetchStatus();
-    const id = setInterval(fetchStatus, 15000);
-    return () => clearInterval(id);
-  }, [fetchStatus]);
+    void load();
+    if (pollMs <= 0) return;
+    const id = window.setInterval(() => void load(), pollMs);
+    return () => window.clearInterval(id);
+  }, [load, pollMs]);
 
-  /* ── new circuit ── */
-  const newCircuit = async () => {
-    setRequesting(true);
+  const rotate = useCallback(async () => {
+    setRotating(true);
     try {
-      await fetch(`${API}/api/opsec/new-circuit`, { method: "POST" });
-      await fetchStatus();
-    } catch {
-      /* swallow */
+      const next = await newCircuit({ timeout_ms: 30_000 });
+      const nextView = toOpsecView(next);
+      setView(nextView);
+      setPollError(null);
+      onRotated?.(nextView);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPollError(message);
+      onError?.(message);
     } finally {
-      setRequesting(false);
+      setRotating(false);
+      setConfirmOpen(false);
+      void load();
     }
-  };
+  }, [load, onError, onRotated]);
 
-  const meta = STATUS_META[status.mode] ?? STATUS_META.checking;
+  const tone = TONE_BY_MODE[view.mode];
+  const title = pollError
+    ? `Opsec status unavailable: ${pollError}`
+    : `Traffic ${view.active ? "is" : "is not"} routed through the active circuit`;
 
   return (
-    <div
-      ref={containerRef}
-      className="relative flex items-center gap-1.5"
-      style={{ height: 24, cursor: "default" }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {/* shield icon */}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke={meta.color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        style={{ flexShrink: 0 }}
-      >
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-      </svg>
-
-      {/* status dot */}
-      <span
-        style={{
-          width: 5,
-          height: 5,
-          borderRadius: "50%",
-          background: meta.color,
-          boxShadow: meta.glow,
-          display: "inline-block",
-          animation: status.mode === "checking" ? "pulse-amber 1.5s ease-in-out infinite" : undefined,
-        }}
-      />
-
-      {/* label */}
-      <span
-        className="label"
-        style={{
-          fontSize: 9,
-          color: meta.color,
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-        }}
-      >
-        {meta.label}
-      </span>
-
-      {/* exit country */}
-      {status.mode === "tor" && status.exit_country && (
-        <span
-          className="label"
-          style={{
-            fontSize: 8,
-            color: "var(--text-muted)",
-            marginLeft: 2,
-          }}
+    <div className={className}>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setDetailOpen(true)}
+          title={title}
+          aria-label={`Opsec ${view.label}. Open details`}
+          className="focus-ring flex items-center gap-1.5 rounded px-1 py-0.5"
         >
-          [{status.exit_country}]
-        </span>
-      )}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={view.active ? "var(--green)" : view.mode === "direct" ? "var(--red)" : "var(--amber)"}
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          <StatusDot
+            tone={tone}
+            dotOnly
+            pulse={view.mode === "unknown"}
+            label={`Opsec ${view.label}`}
+          />
+          <span className="mono-label !text-[9px]">{view.label}</span>
+          {view.exitCountry && (
+            <span className="mono-label !text-[8px]">[{view.exitCountry}]</span>
+          )}
+        </button>
 
-      {/* ── hover tooltip ── */}
-      {hovered && (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            right: 0,
-            zIndex: 100,
-            background: "var(--bg-panel)",
-            border: "1px solid var(--border-hi)",
-            borderRadius: 6,
-            padding: "8px 12px",
-            minWidth: 180,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-          }}
+        <Button
+          size="sm"
+          variant="ghost"
+          loading={rotating}
+          onClick={() => (confirmRotate ? setConfirmOpen(true) : void rotate())}
+          title="Rotate to a fresh circuit"
         >
-          <div className="flex flex-col gap-1.5">
-            {/* exit IP */}
-            <div className="flex items-center justify-between gap-4">
-              <span style={{ color: "var(--text-muted)", fontSize: 9, letterSpacing: "0.1em" }}>
-                EXIT IP
-              </span>
-              <span
-                style={{
-                  color: "var(--text)",
-                  fontSize: 10,
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {status.exit_ip ?? "—"}
-              </span>
-            </div>
+          Rotate
+        </Button>
+      </div>
 
-            {/* request count */}
-            <div className="flex items-center justify-between gap-4">
-              <span style={{ color: "var(--text-muted)", fontSize: 9, letterSpacing: "0.1em" }}>
-                REQUESTS
-              </span>
-              <span
-                style={{
-                  color: "var(--cyan)",
-                  fontSize: 10,
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {status.request_count ?? 0}
-              </span>
-            </div>
-
-            {/* divider */}
-            <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
-
-            {/* new circuit button */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                newCircuit();
-              }}
-              disabled={requesting}
-              className="flex items-center justify-center gap-1.5 py-1 rounded"
-              style={{
-                background: requesting
-                  ? "rgba(0,212,255,0.04)"
-                  : "rgba(0,212,255,0.08)",
-                border: "1px solid rgba(0,212,255,0.2)",
-                color: "var(--cyan)",
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: "0.15em",
-                cursor: requesting ? "wait" : "pointer",
-                transition: "background 0.2s ease",
-                opacity: requesting ? 0.5 : 1,
-              }}
-              onMouseEnter={(e) => {
-                if (!requesting)
-                  e.currentTarget.style.background = "rgba(0,212,255,0.15)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(0,212,255,0.08)";
-              }}
-            >
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={{
-                  animation: requesting ? "spin 1s linear infinite" : undefined,
-                }}
-              >
-                <polyline points="23 4 23 10 17 10" />
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-              </svg>
-              {requesting ? "ROTATING..." : "NEW CIRCUIT"}
-            </button>
+      <Modal
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        title="OPSEC circuit"
+        width={420}
+        footer={
+          <>
+            <Button size="sm" variant="ghost" onClick={() => void load()}>
+              Refresh
+            </Button>
+            <Button size="sm" variant="solid" onClick={() => setConfirmOpen(true)}>
+              Rotate circuit
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-2 p-3">
+          {pollError && (
+            <p role="alert" className="m-0 break-words text-[10px] text-signal-err">
+              {pollError}
+            </p>
+          )}
+          <div>
+            <DefRow label="State">
+              <Badge tone={tone}>{view.label}</Badge>
+            </DefRow>
+            <DefRow label="Routed">{view.active ? "YES" : "NO"}</DefRow>
+            {view.circuitId && <DefRow label="Circuit" mono>{view.circuitId}</DefRow>}
+            {view.detail && <DefRow label="Label">{view.detail}</DefRow>}
+            {view.hops !== undefined && <DefRow label="Hops">{view.hops}</DefRow>}
+            {view.coverage !== undefined && (
+              <DefRow label="Coverage">{Math.round(view.coverage * 100)}%</DefRow>
+            )}
+            {view.startedAt && (
+              <DefRow label="Started">{formatRelativeTime(view.startedAt)}</DefRow>
+            )}
+            {view.expiresAt && (
+              <DefRow label="Expires">{formatRelativeTime(view.expiresAt)}</DefRow>
+            )}
           </div>
         </div>
-      )}
+      </Modal>
 
-      {/* keyframe for checking pulse */}
-      <style jsx>{`
-        @keyframes pulse-amber {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Rotate circuit?"
+        width={380}
+        footer={
+          <>
+            <Button size="sm" variant="ghost" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="solid" loading={rotating} onClick={() => void rotate()}>
+              Rotate
+            </Button>
+          </>
         }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+      >
+        <p className="m-0 p-3 text-[11px] leading-relaxed text-ink-muted">
+          This requests a new exit node and a new identity. In-flight requests routed through the
+          old circuit may fail; connectors that cache the exit should be re-checked afterwards.
+        </p>
+      </Modal>
     </div>
   );
 }
