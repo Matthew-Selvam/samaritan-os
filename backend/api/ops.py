@@ -293,16 +293,39 @@ def has_scope(request: Request, scope: str) -> bool:
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────────
+#
+# Enforcement and the X-RateLimit-* headers both come from WS-SEC's
+# `rate_limit` module when it is present: it owns the token buckets, the
+# per-scope budgets and the env-var precedence. This layer only maps a route
+# onto a scope and turns the verdict into an HTTP outcome — a second limiter
+# here would mean two sets of buckets, and the effective ceiling would depend
+# on which one answered first.
 
+#: Fallback bucket table, used only when `rate_limit` cannot be imported.
 _BUCKETS: dict[str, dict[str, float]] = {}
 _WINDOW_S = 60.0
 
+#: Path fragments mapped onto WS-SEC's named scopes; anything unmatched is
+#: "default". Matched on the longest fragment so `/api/investigate-sync`
+#: resolves to `investigate` rather than something else.
+_SCOPE_RULES: tuple[tuple[str, str], ...] = (
+    ("/investigate-sync", "investigate"),
+    ("/photo-search", "investigate"),
+    ("/name-search", "investigate"),
+    ("/agents/", "investigate"),
+    ("/investigate", "investigate"),
+    ("/compare", "search"),
+    ("/search", "search"),
+    ("/opsec", "opsec"),
+)
+
 
 def _rate_settings() -> tuple[int, int]:
-    """Read the per-minute request budget from the environment.
+    """Read the global request budget from the environment.
 
     Returns:
-        ``(rpm, burst)`` with sane defaults (60 rpm, 20 burst).
+        ``(rpm, burst)``. These are the fallback values used when WS-SEC's
+        ``rate_limit`` is not importable.
     """
 
     def _int(name: str, default: int) -> int:
@@ -314,16 +337,32 @@ def _rate_settings() -> tuple[int, int]:
     return _int("RATE_LIMIT_RPM", 60), _int("RATE_LIMIT_BURST", 20)
 
 
-def _bucket(scope: str, identity: str, rpm: int, burst: int) -> dict[str, float]:
-    """Consume one token from an in-process fixed-window bucket.
-
-    The bucket backs the ``X-RateLimit-*`` response headers. Enforcement is
-    delegated to WS-SEC's ``rate_limit.get_limiter`` when it exists; this keeps
-    the headers meaningful either way.
+def scope_for(path: str) -> str:
+    """Map a request path onto a rate-limit scope.
 
     Args:
-        scope: Route/limiter scope.
-        identity: Caller identity (API key id, else client IP).
+        path: The request path, e.g. ``/api/investigate``.
+
+    Returns:
+        One of ``investigate``/``search``/``read``/``opsec``/``default``.
+    """
+    target = str(path or "")
+    best_scope, best_len = "default", 0
+    for fragment, scope in _SCOPE_RULES:
+        if fragment in target and len(fragment) > best_len:
+            best_scope, best_len = scope, len(fragment)
+    return best_scope
+
+
+def _fallback_bucket(scope: str, identity: str, rpm: int, burst: int) -> dict[str, Any]:
+    """Consume one token from a local fixed-window bucket.
+
+    Only used when WS-SEC's ``rate_limit`` is unavailable; it keeps the
+    dependency functional and the headers populated in a partially-built tree.
+
+    Args:
+        scope: Limiter scope.
+        identity: Caller identity.
         rpm: Requests per window.
         burst: Maximum requests inside one window.
 
@@ -334,7 +373,7 @@ def _bucket(scope: str, identity: str, rpm: int, burst: int) -> dict[str, float]
     key = f"{scope}|{identity}"
     state = _BUCKETS.get(key)
     if state is None or now - state["start"] >= _WINDOW_S:
-        state = {"start": now, "count": 0.0, "allowed": 1.0}
+        state = {"start": now, "count": 0.0}
         _BUCKETS[key] = state
     if state["count"] >= burst:
         return {
@@ -346,7 +385,6 @@ def _bucket(scope: str, identity: str, rpm: int, burst: int) -> dict[str, float]
             "burst": burst,
         }
     state["count"] += 1
-    state["allowed"] = float(state["count"])
     return {
         "allowed": True,
         "remaining": max(0, burst - int(state["count"])),
@@ -364,44 +402,53 @@ def rate_limit_check(request: Request) -> dict[str, Any]:
         request: The incoming request.
 
     Returns:
-        ``{"allowed", "headers", "limit", "remaining"}``. ``headers`` is safe to
-        spread onto any response.
+        ``{"allowed", "headers", "limit", "remaining", "scope"}``. ``headers``
+        is safe to spread onto any response.
     """
-    rpm, burst = _rate_settings()
-    scope = request.url.path
-    identity = str(current_principal(request).get("id") or "anonymous")
+    scope = scope_for(request.url.path)
+    principal = current_principal(request)
+    identity = str(principal.get("id") or "anonymous")
     if identity == "anonymous" and request.client:
         identity = f"anonymous:{request.client.host}"
 
-    decision = _bucket(scope, identity, rpm, burst)
-    allowed = bool(decision["allowed"])
-
-    limiter = None
     rate_limit = _maybe_import("rate_limit")
-    getter = getattr(rate_limit, "get_limiter", None) if rate_limit else None
-    if callable(getter):
+    check = getattr(rate_limit, "check", None) if rate_limit else None
+    if callable(check):
         try:
-            limiter = getter(scope)
-            verdict = limiter.allow()
-            if isinstance(verdict, tuple) and len(verdict) == 2:
-                allowed = bool(verdict[0])
-                decision["retry_after"] = float(verdict[1] or 0.0)
-            else:
-                allowed = bool(verdict)
+            allowed, retry_after, headers = check(identity, scope)
+            headers = dict(headers or {})
+            if not allowed and "Retry-After" not in headers:
+                headers["Retry-After"] = str(max(1, int(retry_after or 0) + 1))
+            get_metrics().incr("api.rate_limited", tags={
+                "scope": scope, "allowed": str(bool(allowed)).lower()})
+            return {
+                "allowed": bool(allowed),
+                "headers": headers,
+                "scope": scope,
+                "limit": headers.get("X-RateLimit-Limit"),
+                "remaining": headers.get("X-RateLimit-Remaining"),
+            }
         except Exception as exc:  # noqa: BLE001 — never fail a request on limiting
-            log.debug("rate limiter unavailable for %s: %s", scope, type(exc).__name__)
+            log.debug("rate limit check failed for %s: %s", scope, type(exc).__name__)
 
+    rpm, burst = _rate_settings()
+    decision = _fallback_bucket(scope, identity, rpm, burst)
     headers = {
         "X-RateLimit-Limit": str(decision["limit"]),
-        "X-RateLimit-Burst": str(decision["burst"]),
         "X-RateLimit-Remaining": str(decision["remaining"]),
         "X-RateLimit-Reset": str(decision["reset"]),
     }
-    if not allowed:
-        retry_after = max(1, int(decision.get("retry_after") or 0) or 1)
-        headers["Retry-After"] = str(retry_after)
-    get_metrics().incr("api.rate_limited", tags={"allowed": str(allowed).lower()})
-    return {"allowed": allowed, "headers": headers, "decision": decision}
+    if not decision["allowed"]:
+        headers["Retry-After"] = str(max(1, int(decision["retry_after"])))
+    get_metrics().incr("api.rate_limited", tags={
+        "scope": scope, "allowed": str(decision["allowed"]).lower()})
+    return {
+        "allowed": bool(decision["allowed"]),
+        "headers": headers,
+        "scope": scope,
+        "limit": decision["limit"],
+        "remaining": decision["remaining"],
+    }
 
 
 async def rate_limit_dep(request: Request, response: Response) -> dict[str, Any]:
@@ -419,12 +466,14 @@ async def rate_limit_dep(request: Request, response: Response) -> dict[str, Any]
     """
     result = rate_limit_check(request)
     for key, value in result["headers"].items():
-        response.headers[key] = value
+        response.headers[key] = str(value)
     if not result["allowed"]:
-        get_metrics().incr("api.rate_limit.rejected")
+        get_metrics().incr("api.rate_limit.rejected", tags={"scope": result["scope"]})
         raise HTTPException(
             status_code=429,
-            detail={"error": "rate limit exceeded", "retry_after": result["headers"].get("Retry-After")},
+            detail={"error": "rate limit exceeded",
+                    "scope": result["scope"],
+                    "retry_after": result["headers"].get("Retry-After")},
             headers=result["headers"],
         )
     return result

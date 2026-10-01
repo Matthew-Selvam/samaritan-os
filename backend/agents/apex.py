@@ -134,8 +134,14 @@ class ApexAgent(BaseAgent):
 
     @property
     def pipeline_budget_s(self) -> float:
-        """Wall-clock ceiling for one whole investigation."""
-        return max(5.0, self._setting("PIPELINE_BUDGET_S", 180.0))
+        """Wall-clock ceiling for one whole investigation.
+
+        The floor is 1s, not something larger: a caller (or a test) that
+        deliberately sets a tight budget must get exactly that budget, or the
+        setting becomes a lie. The *default* when nothing is configured is the
+        generous 180s.
+        """
+        return max(1.0, self._setting("PIPELINE_BUDGET_S", 180.0))
 
     @property
     def max_concurrency(self) -> int:
@@ -203,6 +209,9 @@ class ApexAgent(BaseAgent):
             })
 
             context["input_type"] = context.get("input_type") or decision.input_type.value
+            # A caller-supplied override wins over detection for the *reported*
+            # type too, not just for the agents that receive it.
+            reported_type = context["input_type"]
             # Normalized target so equivalent spellings share one cache/case key.
             context.setdefault("target", decision.target)
             context["cache_key"] = decision.target.get("cache_key") or raw[:200]
@@ -217,6 +226,13 @@ class ApexAgent(BaseAgent):
 
             # ── 2. Primary swarm (one parallel stage) ────────────────────────
             primary_names = [n for n in decision.agents if n not in self.CORRELATION_TIER]
+            budget_hit = time.monotonic() >= deadline
+            if budget_hit and primary_names:
+                self.log(f"⚠ pipeline budget exhausted before the primary swarm — "
+                         f"skipping {', '.join(primary_names)}")
+                events.append({"event": "pipeline_budget_exhausted",
+                               "stage": "primary", "skipped": primary_names})
+                primary_names = []
             primary = await self._run_stage(
                 primary_names, registry, raw, context, gate, events, timeout_for, deadline,
                 stage="primary",
@@ -231,7 +247,10 @@ class ApexAgent(BaseAgent):
                                     zip(all_agents, all_results)]
 
             for stage_name, names in self.DAG:
-                if time.monotonic() >= deadline:
+                # QUILL is the synthesiser: it must run even on an exhausted
+                # budget, because a report of partial findings is exactly what
+                # partial success means. Only its *dependencies* are skipped.
+                if time.monotonic() >= deadline and stage_name != "report":
                     remaining = [n for n in names if n not in
                                  {r.agent for r in all_results}]
                     if remaining:
@@ -302,7 +321,8 @@ class ApexAgent(BaseAgent):
             output = {
                 # ── legacy keys the frontend depends on ──
                 "input": raw[:500],
-                "input_type": decision.input_type.value,
+                "input_type": reported_type,
+                "detected_input_type": decision.input_type.value,
                 "routing_confidence": decision.confidence,
                 "routing_reasoning": decision.reasoning,
                 "agents_activated": agents_activated,
@@ -399,7 +419,18 @@ class ApexAgent(BaseAgent):
                         events, timeout_for, deadline, *, stage: str) -> AgentResult:
         """Run one agent with timeout + retry, converting failure into a result."""
         t0 = self._start_timer()
-        budget = max(1.0, deadline - time.monotonic())
+        # The pipeline budget is a *hard* ceiling for the whole run, so an
+        # agent may never be given more time than remains before the deadline.
+        # Clamping up (rather than down) here would let one agent overrun the
+        # entire budget, which is the exact failure the budget exists to stop.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.25:
+            return AgentResult(
+                agent=agent.name, status="error", output=None,
+                error="pipeline time budget exhausted before this agent started",
+                latency_s=self._elapsed(t0),
+            )
+        budget = max(0.25, remaining)
         limit = min(timeout_for(agent.name), budget)
         attempts = self.max_attempts
         last_error: str | None = None

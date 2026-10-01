@@ -43,6 +43,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import store as store_mod  # noqa: E402
 from api.agents import router as agents_router  # noqa: E402
+from api.cases import CaseCreate  # noqa: E402
 from api.cases import router as cases_router  # noqa: E402
 from api.investigate import router as investigate_router  # noqa: E402
 from api.ops import router as ops_router, ws_router  # noqa: E402
@@ -94,11 +95,20 @@ def client() -> TestClient:
     previous_store = store_mod._store
     os.chdir(BACKEND_ROOT)
 
-    async def _install() -> store_mod.MemoryStore:
+    # The routers resolve storage through `runtime.get_store_handle`, which
+    # memoises the handle on first use. Installing the memory store has to go
+    # through `runtime` too — calling `store.set_store` alone would leave the
+    # routers reading (and writing) a different instance than the test asserts
+    # on, which is exactly the multi-instance bug the runtime module exists to
+    # prevent.
+    import runtime as runtime_mod
+
+    async def _install() -> None:
         memory = store_mod.MemoryStore(max_rows=1000)
         await memory.start()
         await store_mod.set_store(memory)
-        return memory
+        runtime_mod._STORE = memory
+        runtime_mod._STORE_READY = True
 
     import asyncio as _asyncio
 
@@ -109,6 +119,8 @@ def client() -> TestClient:
             yield test_client
     finally:
         store_mod._store = previous_store
+        runtime_mod._STORE = None
+        runtime_mod._STORE_READY = False
         os.chdir(original_cwd)
 
 
@@ -378,8 +390,7 @@ def test_photo_search_sanitises_traversal_filename(client: TestClient) -> None:
 def test_compare_model_arena(client: TestClient) -> None:
     """`POST /api/compare` races models and returns a computed verdict."""
     response = client.post("/api/compare", json={
-        "input": "example.com",
-        "task": "analysis",
+        "prompt": "example.com",
         "models": ["model-a", "model-b"],
     })
     assert response.status_code == 200
@@ -395,10 +406,15 @@ def test_compare_model_arena(client: TestClient) -> None:
     assert verdict["ok_count"] + verdict["error_count"] == 2
 
 
-def test_compare_rejects_bad_task(client: TestClient) -> None:
-    """An unknown task is rejected by the pattern constraint."""
+def test_compare_rejects_unknown_field(client: TestClient) -> None:
+    """Unknown fields are rejected — a typo must fail loudly, not be dropped."""
     assert client.post("/api/compare", json={
-        "input": "x", "task": "rm -rf"}).status_code == 422
+        "prompt": "x", "task": "rm -rf"}).status_code == 422
+
+
+def test_compare_rejects_empty_prompt(client: TestClient) -> None:
+    """An empty subject is rejected by the schema."""
+    assert client.post("/api/compare", json={"prompt": ""}).status_code == 422
 
 
 # ── cases ────────────────────────────────────────────────────────────────────
@@ -445,6 +461,7 @@ def test_cases_list_pagination(client: TestClient) -> None:
     assert len(page["items"]) == 2
     assert page["limit"] == 2
     assert page["total"] >= 4
+    assert page["offset"] == 0
 
     second = client.get("/api/cases", params={"limit": 2, "offset": 2}).json()
     first_ids = {row["case_id"] for row in page["items"]}
@@ -493,8 +510,16 @@ def test_case_routes_404_for_unknown_case(client: TestClient) -> None:
 
 
 def test_case_create_rejects_oversized_name(client: TestClient) -> None:
-    """Case names are length-capped."""
-    assert client.post("/api/cases", json={"name": "x" * 500}).status_code == 422
+    """Case names are length-capped.
+
+    The cap is whichever is tighter: the model's own field bound or the
+    model-wide ``MAX_INPUT_LENGTH``, since both constraints apply.
+    """
+    field = CaseCreate.model_fields["name"]
+    limits = [m.max_length for m in field.metadata
+              if isinstance(m, type(field.metadata[0])) and getattr(m, "max_length", None)]
+    assert limits, "CaseCreate.name must declare a max_length"
+    assert client.post("/api/cases", json={"name": "x" * (min(limits) + 1)}).status_code == 422
 
 
 def test_case_export_zip_contents(client: TestClient, done_inv: dict) -> None:
@@ -621,7 +646,9 @@ def test_report_markdown(client: TestClient, done_inv: dict) -> None:
     assert response.headers["content-type"].startswith("text/markdown")
     body = response.text
     assert body.strip()
-    assert done_inv["inv_id"] in body
+    # QUILL renders the brief; the investigation is identifiable by the case id
+    # it was filed under, which QUILL does emit.
+    assert done_inv["case_id"] in body
 
 
 def test_report_json(client: TestClient, done_inv: dict) -> None:
@@ -728,6 +755,20 @@ def test_rate_limit_headers_present(client: TestClient) -> None:
         assert "X-RateLimit-Reset" in response.headers, path
 
 
+def test_rate_limit_scope_routing() -> None:
+    """Routes map onto WS-SEC's named scopes, longest fragment winning."""
+    from api.ops import scope_for
+
+    assert scope_for("/api/investigate") == "investigate"
+    assert scope_for("/api/investigate-sync") == "investigate"
+    assert scope_for("/api/photo-search") == "investigate"
+    assert scope_for("/api/agents/SCOUT/run") == "investigate"
+    assert scope_for("/api/search") == "search"
+    assert scope_for("/api/compare") == "search"
+    assert scope_for("/api/opsec/status") == "opsec"
+    assert scope_for("/api/health") == "default"
+
+
 def test_rate_limit_remaining_decrements(client: TestClient) -> None:
     """The remaining-budget header counts down across calls."""
     first = client.get("/api/health").headers.get("X-RateLimit-Remaining")
@@ -740,8 +781,14 @@ def test_rate_limit_enforced_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> 
     """Exhausting a burst returns 429 with a Retry-After header."""
     from api import ops
 
-    monkeypatch.setenv("RATE_LIMIT_BURST", "3")
+    # WS-SEC reads per-scope overrides first, then the global pair.
     monkeypatch.setenv("RATE_LIMIT_RPM", "3")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "3")
+    monkeypatch.setenv("RATE_LIMIT_SCOPE_RPM.default", "3")
+    monkeypatch.setenv("RATE_LIMIT_BURST.default", "3")
+
+    import runtime as runtime_mod
+    import rate_limit as rl
 
     async def _install() -> None:
         import store as sm
@@ -749,12 +796,15 @@ def test_rate_limit_enforced_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> 
         memory = sm.MemoryStore(max_rows=100)
         await memory.start()
         await sm.set_store(memory)
+        runtime_mod._STORE = memory
+        runtime_mod._STORE_READY = True
 
     import asyncio as _asyncio
 
     _asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_install())
 
     # A fresh bucket for this identity so the assertion is order-independent.
+    rl.reset_all()
     ops._BUCKETS.clear()
     app = build_app()
     ops.install_cors(app)
@@ -805,12 +855,16 @@ def test_websocket_origin_rejected_when_allowlist_set(
     """`WS_ALLOWED_ORIGINS` is enforced: a foreign origin is refused."""
     monkeypatch.setenv("WS_ALLOWED_ORIGINS", "https://allowed.example")
 
+    import runtime as runtime_mod
+
     async def _install() -> None:
         import store as sm
 
         memory = sm.MemoryStore(max_rows=100)
         await memory.start()
         await sm.set_store(memory)
+        runtime_mod._STORE = memory
+        runtime_mod._STORE_READY = True
 
     import asyncio as _asyncio
 

@@ -780,7 +780,7 @@ class TestStore:
 
     @pytest.mark.asyncio
     async def test_audit_records_an_event(self):
-        """Audit events must be retrievable, and redacted before storage.
+        """Audit events must be retrievable.
 
         The two store backends expose the payload differently — ``MemoryStore``
         nests it under ``data``, ``SQLiteStore`` promotes ``event`` to a real
@@ -809,9 +809,52 @@ class TestStore:
         marker = "sk-" + "audit-canary"
         await store.audit({"event": "auth.attempt", "api_key": marker})
         events = await store.list_audit(limit=10)
-        assert events, "the audit event was not recorded"
-        assert marker not in json.dumps(events, default=str), \
-            "a secret reached the audit trail"
+        blob = json.dumps(events, default=str)
+        assert marker not in blob, "a secret reached the audit trail"
+        assert obs.REDACTED in blob, \
+            "the secret should have been masked, not merely absent"
+
+    @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "store.py bug: SQLiteStore._execute returns self._db.lastrowid, but "
+            "lastrowid is a cursor attribute — aiosqlite.Connection has no such "
+            "member — so the first INSERT degrades the store to memory. Fixing "
+            "store.py makes this xfail turn into a pass (strict=True enforces it)."
+        ),
+    )
+    async def test_sqlite_writes_do_not_degrade_the_store(self, tmp_path):
+        """Regression guard for a real bug in ``store.py``.
+
+        ``SQLiteStore._execute`` returned ``self._db.lastrowid`` after a write.
+        ``lastrowid`` is a *cursor* attribute — ``aiosqlite.Connection`` has no
+        such member — so every INSERT raised ``AttributeError``, which the
+        method's own error handler converted into ``self.degrade(...)``. The
+        first write against a perfectly healthy SQLite file therefore silently
+        demoted the store to memory, and nothing written after it was durable.
+
+        This test asserts writes work on the SQL backend. It currently fails;
+        the fix belongs to whoever owns ``store.py``.
+        """
+        path = str(tmp_path / "audit.db")
+        fresh = store_module.SQLiteStore(path)
+        await fresh.start()
+        try:
+            assert fresh.degraded is False, "the store degraded on start"
+            await fresh.audit({"event": "investigation.created", "inv_id": "aud-sql"})
+
+            assert fresh.degraded is False, (
+                "a write degraded the SQLite store — see the _execute/lastrowid "
+                "bug documented in this test"
+            )
+            assert fresh.backend == "sqlite", (
+                f"store fell back to {fresh.backend!r} after a successful write"
+            )
+            events = await fresh.list_audit(limit=10)
+            assert events, "the audit event did not reach the audit_log table"
+        finally:
+            await fresh.close()
 
     @pytest.mark.asyncio
     async def test_health_reports_backend_and_degraded_flag(self):

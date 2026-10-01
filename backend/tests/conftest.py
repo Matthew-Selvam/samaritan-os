@@ -213,6 +213,7 @@ def _reset_sync_state():
         ``None``.
     """
     _pin_cache_backend()
+    _pin_store_backend()
     try:
         import cache as cache_module
 
@@ -242,6 +243,44 @@ def _reset_sync_state():
         cache_module.reset_stats()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _pin_store_backend() -> str:
+    """Pin the store to the in-memory backend for the whole suite.
+
+    Memory is the store's documented zero-config path, and it is what every
+    test here wants: the tests are about the *store contract* (round trips,
+    ordering, stats, the degraded flag), not about SQL.
+
+    It is also the only path that currently works reliably, because of a real
+    bug in ``store.py`` that this suite documents rather than works around
+    silently — see ``TestStore.test_sqlite_writes_do_not_degrade_the_store``.
+    ``SQLiteStore._execute`` returns ``self._db.lastrowid`` after a write, but
+    ``lastrowid`` is a *cursor* attribute and ``aiosqlite.Connection`` has no
+    such member. The resulting ``AttributeError`` is caught by the method's own
+    handler and converted into ``self.degrade(...)``, so the very first INSERT
+    against a healthy SQLite file silently demotes the store to memory. The
+    ``store.py`` owner needs to fix ``_execute``; until then the memory backend
+    is the only backend whose durability can be asserted.
+
+    Returns:
+        The pinned backend name, always ``"memory"``.
+    """
+    import store as store_module
+
+    backend = "memory"
+    try:
+        store_module._store = None  # noqa: SLF001 — drop any prior instance
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import config as config_module
+
+        config_module.STORE_BACKEND = backend
+        config_module.SQLITE_PATH = None
+    except Exception:  # noqa: BLE001
+        pass
+    return backend
 
 
 #: Sentinel meaning "no Redis was configured" — skips the probe entirely.
@@ -311,7 +350,7 @@ def _pin_cache_backend(backend: str = "memory") -> str:
 # must never observe or clobber another test's state.
 
 
-#: Provider credentials cleared for every agent test, so ``llm.py`` always takes
+#: Every provider credential cleared for every agent test, so ``llm.py`` always takes
 #: its deterministic offline path and no connector can find a key.
 _AGENT_TEST_ENV: dict[str, str] = {
     "OPENAI_API_KEY": "",
@@ -330,6 +369,16 @@ _AGENT_TEST_ENV: dict[str, str] = {
     "APEX_PIPELINE_BUDGET_S": "60",
     "APEX_MAX_CONCURRENCY": "8",
     "APEX_RETRY_BACKOFF_S": "0",
+}
+
+#: Per-agent timeouts used only in tests. The production values (CRAWLER=20s,
+#: IRIS=45s) are sized for live network calls; in a sandbox where sockets are
+#: blocked, every connector waits out its full timeout before degrading. Shrinking
+#: them keeps the suite fast without changing any code path — an agent that hits
+#: its timeout still returns a timeout AgentResult.
+_TEST_AGENT_TIMEOUTS: dict[str, float] = {
+    "CRAWLER": 2.0, "ECHO": 2.0, "IRIS": 2.0, "TERRA": 2.0, "INK": 2.0,
+    "EMAIL": 3.0, "SCOUT": 5.0, "PRISM": 5.0, "PHONOS": 5.0, "SIGMA": 5.0,
 }
 
 
@@ -369,6 +418,11 @@ def agent_isolation(tmp_path, monkeypatch):
         monkeypatch.setattr(config, "SQLITE_PATH", str(db_path), raising=False)
         monkeypatch.setattr(config, "OPSEC_ENABLED", False, raising=False)
         monkeypatch.setattr(config, "SHODAN_API_KEY", "", raising=False)
+        # Shrink every agent's budget so a blocked socket degrades in seconds
+        # rather than minutes. Same code path, just a tighter clock.
+        for agent, seconds in _TEST_AGENT_TIMEOUTS.items():
+            monkeypatch.setattr(config, f"TIMEOUT_{agent}", seconds, raising=False)
+            monkeypatch.setenv(f"TIMEOUT_{agent}", str(seconds))
     except Exception:  # noqa: BLE001 — config is optional for pure-router tests
         pass
     return tmp_path

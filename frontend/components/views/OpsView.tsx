@@ -33,7 +33,7 @@ import { API_BASE, apiFetch, getHealth, getMetrics, newCircuit } from "@/lib/api
 import { formatBytes, formatDuration, formatRelativeTime, truncate, type Tone } from "@/lib/format";
 import type { HealthLevel, MetricsSnapshot } from "@/lib/types";
 import { normalizeDeepHealth, type DeepHealth } from "@/lib/views";
-import { useAsyncResource, useLocalStorage } from "@/lib/hooks";
+import { apiCall, apiCallOr, useAsyncResource, useLocalStorage } from "@/lib/hooks";
 
 type OpsTab = "opsec" | "metrics" | "config" | "connectors";
 
@@ -92,25 +92,37 @@ export function OpsView({ className }: OpsViewProps) {
   const [rawOps, setRawOps] = useState<Record<string, unknown>>({});
 
   const health = useAsyncResource<DeepHealth>(
-    async (signal) => normalizeDeepHealth(await getHealth({ signal, timeout_ms: 10_000 })),
+    async (signal) =>
+      normalizeDeepHealth(
+        await apiCall(() => getHealth({ signal, timeout_ms: 10_000 }), "/api/health"),
+      ),
     { pollMs: 20_000 },
   );
   const metrics = useAsyncResource<MetricsSnapshot>(
-    (signal) => getMetrics({ signal, timeout_ms: 12_000 }),
+    (signal) =>
+      apiCallOr(
+        () => getMetrics({ signal, timeout_ms: 12_000 }),
+        "/api/metrics",
+        {} as MetricsSnapshot,
+      ),
     { pollMs: 15_000 },
   );
   const config = useAsyncResource<Record<string, unknown>>(
     async (signal) => {
-      const payload = await apiFetch<Record<string, unknown>>("/api/config", {
-        signal,
-        timeout_ms: 15_000,
-      });
+      const payload = await apiCall(
+        () => apiFetch<Record<string, unknown>>("/api/config", { signal, timeout_ms: 15_000 }),
+        "/api/config",
+      );
       return payload && typeof payload === "object" ? payload : {};
     },
     { pollMs: 0 },
   );
   const opsecResource = useAsyncResource<unknown>(
-    async (signal) => apiFetch<unknown>("/api/opsec/status", { signal, timeout_ms: 10_000 }),
+    (signal) =>
+      apiCall(
+        () => apiFetch<unknown>("/api/opsec/status", { signal, timeout_ms: 10_000 }),
+        "/api/opsec/status",
+      ),
     { pollMs: 15_000, deps: [tab] },
   );
 

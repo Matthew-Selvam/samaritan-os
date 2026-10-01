@@ -96,6 +96,8 @@ export interface OpsecIndicatorProps {
   /** Notified when the backend reports a failure. */
   onError?: (message: string) => void;
   className?: string;
+  /** Rail mode: icon only, with the detail dialog still reachable. */
+  compact?: boolean;
 }
 
 /**
@@ -110,6 +112,7 @@ export function OpsecIndicator({
   onRotated,
   onError,
   className,
+  compact = false,
 }: OpsecIndicatorProps) {
   const [view, setView] = useState<OpsecView>({ active: false, mode: "unknown", label: "CHECKING" });
   const [detailOpen, setDetailOpen] = useState(false);
@@ -188,21 +191,23 @@ export function OpsecIndicator({
             pulse={view.mode === "unknown"}
             label={`Opsec ${view.label}`}
           />
-          <span className="mono-label !text-[9px]">{view.label}</span>
-          {view.exitCountry && (
+          {!compact && <span className="mono-label !text-[9px]">{view.label}</span>}
+          {!compact && view.exitCountry && (
             <span className="mono-label !text-[8px]">[{view.exitCountry}]</span>
           )}
         </button>
 
-        <Button
-          size="sm"
-          variant="ghost"
-          loading={rotating}
-          onClick={() => (confirmRotate ? setConfirmOpen(true) : void rotate())}
-          title="Rotate to a fresh circuit"
-        >
-          Rotate
-        </Button>
+        {!compact && (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={rotating}
+            onClick={() => (confirmRotate ? setConfirmOpen(true) : void rotate())}
+            title="Rotate to a fresh circuit"
+          >
+            Rotate
+          </Button>
+        )}
       </div>
 
       <Modal

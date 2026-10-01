@@ -50,8 +50,7 @@ import {
 } from "@/lib/format";
 import { labelFor } from "@/lib/entityTypes";
 import type { Case, CaseStats, Entity, Investigation, TimelineEvent } from "@/lib/types";
-import { downloadBlob, toJson } from "@/lib/hooks";
-import { useAsyncResource } from "@/lib/hooks";
+import { apiCall, downloadBlob, toJson, useAsyncResource } from "@/lib/hooks";
 
 type CasesTab = "investigations" | "entities" | "timeline";
 
@@ -89,7 +88,8 @@ export function CasesView({
 }: CasesViewProps) {
   const toast = useToast();
   const cases = useAsyncResource<Case[]>(
-    (signal) => listCases({ limit: 100 }, { signal, timeout_ms: 15_000 }),
+    (signal) =>
+      apiCall(() => listCases({ limit: 100 }, { signal, timeout_ms: 15_000 }), "/api/cases"),
     { pollMs: 20_000 },
   );
 
@@ -116,19 +116,35 @@ export function CasesView({
   );
 
   const stats = useAsyncResource<CaseStats>(
-    (signal) => getCaseStats(selectedId as string, { signal, timeout_ms: 15_000 }),
+    (signal) =>
+      apiCall(
+        () => getCaseStats(selectedId as string, { signal, timeout_ms: 15_000 }),
+        `/api/cases/${selectedId}/stats`,
+      ),
     { enabled: Boolean(selectedId), deps: [selectedId] },
   );
   const investigations = useAsyncResource<Investigation[]>(
-    (signal) => listInvestigations({ case_id: selectedId ?? undefined, limit: 100 }, { signal }),
+    (signal) =>
+      apiCall(
+        () => listInvestigations({ case_id: selectedId ?? undefined, limit: 100 }, { signal }),
+        "/api/investigations",
+      ),
     { enabled: Boolean(selectedId), deps: [selectedId] },
   );
   const entities = useAsyncResource<Entity[]>(
-    (signal) => getCaseEntities(selectedId as string, { signal, timeout_ms: 20_000 }),
+    (signal) =>
+      apiCall(
+        () => getCaseEntities(selectedId as string, { signal, timeout_ms: 20_000 }),
+        `/api/cases/${selectedId}/entities`,
+      ),
     { enabled: Boolean(selectedId), deps: [selectedId] },
   );
   const timeline = useAsyncResource<TimelineEvent[]>(
-    (signal) => getCaseTimeline(selectedId as string, { signal, timeout_ms: 20_000 }),
+    (signal) =>
+      apiCall(
+        () => getCaseTimeline(selectedId as string, { signal, timeout_ms: 20_000 }),
+        `/api/cases/${selectedId}/timeline`,
+      ),
     { enabled: Boolean(selectedId), deps: [selectedId] },
   );
 

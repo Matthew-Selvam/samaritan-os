@@ -48,8 +48,7 @@ import type {
   Report,
   ReportFormat,
 } from "@/lib/types";
-import { copyToClipboard, downloadBlob } from "@/lib/hooks";
-import { useAsyncResource } from "@/lib/hooks";
+import { apiCall, copyToClipboard, downloadBlob, useAsyncResource } from "@/lib/hooks";
 
 export interface ReportsViewProps {
   investigation: Investigation | null;
@@ -125,10 +124,10 @@ export function ReportsView({
   /* ── Prefer the inline markdown; otherwise ask the backend ── */
   const remote = useAsyncResource<Report | string>(
     async (signal) => {
-      const payload = await getReport<unknown>(invId as string, "markdown", {
-        signal,
-        timeout_ms: 45_000,
-      });
+      const payload = await apiCall(
+        () => getReport<unknown>(invId as string, "markdown", { signal, timeout_ms: 45_000 }),
+        `/api/investigate/${invId}/report`,
+      );
       if (typeof payload === "string") return payload;
       if (payload && typeof payload === "object") {
         const record = payload as { markdown?: string; content?: string };

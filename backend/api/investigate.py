@@ -791,6 +791,7 @@ async def submit_investigation_sync(req: InvestigateRequest):
 @router.get("/investigations")
 async def list_investigations(case_id: Optional[str] = None, limit: int = 50,
                               offset: int = 0, response: Response = None):
+
     """List investigations, newest first.
 
     Returns a **bare JSON array** because main.py did and

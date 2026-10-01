@@ -35,8 +35,7 @@ import {
 } from "@/lib/format";
 import { labelFor } from "@/lib/entityTypes";
 import type { Entity, TimelineEvent } from "@/lib/types";
-import { downloadBlob, toJson } from "@/lib/hooks";
-import { useAsyncResource } from "@/lib/hooks";
+import { apiCall, downloadBlob, toJson, useAsyncResource } from "@/lib/hooks";
 
 /** Minimal structural types for vis — avoids importing its global namespace. */
 interface VisItem {
@@ -154,7 +153,11 @@ export function TimelineView({
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const caseTimeline = useAsyncResource<TimelineEvent[]>(
-    (signal) => getCaseTimeline(caseId as string, { signal, timeout_ms: 20_000 }),
+    (signal) =>
+      apiCall(
+        () => getCaseTimeline(caseId as string, { signal, timeout_ms: 20_000 }),
+        `/api/cases/${caseId}/timeline`,
+      ),
     { enabled: !events.length && Boolean(caseId), deps: [caseId, events.length] },
   );
 

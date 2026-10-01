@@ -32,7 +32,7 @@ import {
 } from "@/components/ui";
 import { StatusDot } from "@/components/StatusDot";
 import { AGENT_ROSTER, agentColor } from "@/components/AgentGrid";
-import { runAgent } from "@/lib/api";
+import { apiFetch, runAgent } from "@/lib/api";
 import {
   confidencePct,
   formatRelativeTime,
@@ -49,7 +49,7 @@ import type {
   Signal,
 } from "@/lib/types";
 import { agentsForInputType, isAgentName, type AgentCatalogEntry } from "@/lib/agentCatalog";
-import { useAsyncResource } from "@/lib/hooks";
+import { apiCall, useAsyncResource } from "@/lib/hooks";
 
 type AgentsTab = "roster" | "dag" | "console";
 
@@ -138,20 +138,22 @@ export function AgentsView({
 
   /* ── Backend descriptors ── */
   const agentsResource = useAsyncResource<AgentMeta[]>(
-    (signal) =>
-      import("@/lib/api").then(({ listAgents }) =>
-        listAgents({ signal, timeout_ms: 15_000 }),
-      ),
+    (signal) => apiCall(() => listAgents({ signal, timeout_ms: 15_000 }), "/api/agents"),
     { pollMs: 30_000 },
   );
 
   /* ── Registry DAG ── */
   const graphResource = useAsyncResource<AgentNode[]>(
     async (signal) => {
-      const { apiFetch } = await import("@/lib/api");
-      const payload = await apiFetch<AgentNode[] | { nodes?: AgentNode[]; agents?: AgentNode[] }>(
+      const payload = await apiCall<
+        AgentNode[] | { nodes?: AgentNode[]; agents?: AgentNode[] }
+      >(
+        () =>
+          apiFetch<AgentNode[] | { nodes?: AgentNode[]; agents?: AgentNode[] }>(
+            "/api/agents/registry/graph",
+            { signal, timeout_ms: 15_000 },
+          ),
         "/api/agents/registry/graph",
-        { signal, timeout_ms: 15_000 },
       );
       if (Array.isArray(payload)) return payload;
       if (payload && typeof payload === "object") {

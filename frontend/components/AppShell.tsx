@@ -27,6 +27,9 @@ import { AgentGrid } from "@/components/AgentGrid";
 import { OpsecIndicator } from "@/components/OpsecIndicator";
 import { Tooltip } from "@/components/ui";
 import { ToastProvider, useToast } from "@/components/ui";
+import { CommandPalette } from "@/components/CommandPalette";
+import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import type { PaletteItem } from "@/lib/palette";
 import { DashboardView } from "@/components/views/DashboardView";
 import { InvestigateView } from "@/components/views/InvestigateView";
 import { CasesView } from "@/components/views/CasesView";
@@ -561,6 +564,7 @@ function Shell({ initialView, className }: AppShellProps) {
     [graphCaseEntities, investigation?.report?.entities, entities],
   );
 
+  const opsecLabel = health === "down" ? "backend offline" : health === null ? "checking" : health;
   const report = investigation?.report ?? null;
   const reportTimeline = report?.timeline ?? [];
   const currentCase = cases.find((c) => c.case_id === caseId) ?? null;
@@ -623,12 +627,14 @@ function Shell({ initialView, className }: AppShellProps) {
 
           <span aria-hidden="true" className="my-1 h-px w-5 bg-border-subtle" />
 
-          <OpsecIndicator
-            pollMs={30_000}
-            className="[&>div>button:first-child]:h-8 [&>div>button:first-child]:w-8 [&>div>button:first-child]:justify-center [&>div>button:first-child]:p-0 [&>div>button:last-child]:sr-only"
-            onRotated={() => toast.success("Circuit rotated.")}
-            onError={(message) => toast.error(message)}
-          />
+          <Tooltip label={`Opsec · ${opsecLabel}`} side="right">
+            <OpsecIndicator
+              pollMs={30_000}
+              compact
+              onRotated={() => toast.success("Circuit rotated.")}
+              onError={(message) => toast.error(message)}
+            />
+          </Tooltip>
         </nav>
 
         {/* View surface */}
@@ -906,12 +912,6 @@ function ShellOverlays({
   recent,
   caseLabel,
 }: OverlaysProps) {
-  // Lazy + optional: these modules are supplied by another workstream, so the
-  // shell must keep building (and every other key must keep working) without
-  // them. `null` is a valid ReactNode, so nothing renders if they are absent.
-  const CommandPalette = useOptionalComponent("CommandPalette");
-  const ShortcutsDialog = useOptionalComponent("ShortcutsDialog");
-
   const items = useMemo(() => {
     const out: PaletteItem[] = [];
     for (const def of views) {
@@ -994,11 +994,9 @@ function ShellOverlays({
     [onNavigate, onNewInvestigation, onRotateCircuit],
   );
 
-  if (!CommandPalette && !ShortcutsDialog) return null;
-
   return (
     <>
-      {CommandPalette && (
+      {paletteOpen && (
         <CommandPalette
           open={paletteOpen}
           onClose={() => onPaletteOpenChange(false)}
@@ -1008,7 +1006,7 @@ function ShellOverlays({
           placeholder="Search views, actions, agents, investigations…"
         />
       )}
-      {ShortcutsDialog && (
+      {shortcutsOpen && (
         <ShortcutsDialog
           open={shortcutsOpen}
           onClose={() => onShortcutsOpenChange(false)}
@@ -1057,58 +1055,3 @@ const AGENT_ROSTER_FOR_PALETTE: readonly { name: string; role: string; icon: str
   { name: "PHONOS", role: "Phone Intelligence", icon: "☏" },
 ];
 
-/** Palette item shape, imported lazily to keep this module type-only. */
-interface PaletteItem {
-  readonly id: string;
-  readonly label: string;
-  readonly hint?: string;
-  readonly icon?: string;
-  readonly source: "static" | "dynamic";
-  readonly keywords?: readonly string[];
-  readonly payload?: unknown;
-}
-
-/** Props the optional overlay components accept. */
-interface OptionalComponentProps {
-  open: boolean;
-  onClose: () => void;
-  [key: string]: unknown;
-}
-
-type OptionalComponent = (props: OptionalComponentProps) => React.ReactElement | null;
-
-/**
- * Resolve a component owned by another workstream without a hard import.
- *
- * Uses a dynamic import wrapped in `try/catch`; when the module is missing the
- * hook returns `null` and the shell renders the rest of the app unchanged. The
- * module is cached so the resolution cost is paid at most once.
- */
-function useOptionalComponent(name: "CommandPalette" | "ShortcutsDialog"): OptionalComponent | null {
-  const [component, setComponent] = useState<OptionalComponent | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const mod =
-          name === "CommandPalette"
-            ? await import("@/components/CommandPalette")
-            : await import("@/components/ShortcutsDialog");
-        const resolved = (mod as Record<string, unknown>)[name];
-        if (typeof resolved === "function" && !cancelled) {
-          setComponent(resolved as OptionalComponent);
-        }
-      } catch (err) {
-        console.warn(
-          `[signal-os] optional overlay ${name} is unavailable; the shell continues without it.`,
-          err,
-        );
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [name]);
-  return component;
-}

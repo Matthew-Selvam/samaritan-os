@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "./api";
 
 /** Lifecycle of an async resource. */
 export type ResourceState = "idle" | "loading" | "success" | "error";
@@ -122,6 +123,75 @@ export function useAsyncResource<T>(
     reload,
     set,
   };
+}
+
+/**
+ * True when a body is HTML rather than a JSON payload.
+ *
+ * With the API base left same-origin, an unmatched `/api/...` path returns the
+ * Next.js SPA document with HTTP 200. Surface that as "backend unreachable"
+ * rather than dumping markup into an error panel.
+ *
+ * @param value - Any value returned by an `apiFetch` call.
+ */
+export function isHtmlPayload(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const head = value.slice(0, 200).trim().toLowerCase();
+  return head.startsWith("<!doctype") || head.startsWith("<html");
+}
+
+/** Error thrown when the API base resolves to the SPA document. */
+export function missingBackendError(path: string): Error {
+  return new Error(
+    `No backend at ${path || "/api"} — the request returned the frontend's HTML document. ` +
+      `Set NEXT_PUBLIC_API_URL to the FastAPI origin, or add an /api and /ws rewrite in next.config.`,
+  );
+}
+
+/**
+ * Screen a backend call for the "no backend" case.
+ *
+ * Every view goes through this instead of calling `lib/api.ts` directly, so an
+ * HTML body can never reach an error panel. `apiFetch` throws on a non-2xx
+ * before the body is inspected, so both the success path and the `ApiError`
+ * path are checked.
+ *
+ * @param call - Performs the request (usually a thin `lib/api.ts` wrapper).
+ * @param path - API path used in the error message.
+ * @returns The parsed payload.
+ * @throws {ApiError} unchanged for genuine API failures.
+ * @throws {Error} describing the missing backend when HTML came back.
+ */
+export async function apiCall<T>(call: () => Promise<T>, path: string): Promise<T> {
+  try {
+    const value = await call();
+    if (isHtmlPayload(value)) throw missingBackendError(path);
+    return value;
+  } catch (err) {
+    if (err instanceof ApiError && isHtmlPayload(err.body)) {
+      throw missingBackendError(path);
+    }
+    throw err;
+  }
+}
+
+/**
+ * {@link apiCall} with the missing-backend case degraded to a fallback value.
+ *
+ * For data the UI can render without — metrics counters, optional config — a
+ * missing backend is not worth an error panel.
+ */
+export async function apiCallOr<T>(
+  call: () => Promise<T>,
+  path: string,
+  fallback: T,
+): Promise<T> {
+  try {
+    return await apiCall(call, path);
+  } catch (err) {
+    if (err instanceof ApiError && isHtmlPayload(err.body)) return fallback;
+    throw err;
+  }
 }
 
 /** Heuristic emptiness used for `Resource.empty`. */

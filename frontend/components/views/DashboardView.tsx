@@ -55,7 +55,7 @@ import {
   type ServiceKey,
   type TallyRow,
 } from "@/lib/views";
-import { useAsyncResource } from "@/lib/hooks";
+import { apiCall, apiCallOr, useAsyncResource } from "@/lib/hooks";
 
 export interface DashboardViewProps {
   /** Bar ref so `/` and the palette can focus the field from here too. */
@@ -73,26 +73,27 @@ export interface DashboardViewProps {
   className?: string;
 }
 
-/** Health payload source: `/api/health/deep` first, `/api/health` as fallback. */
+/**
+ * Health payload source.
+ *
+ * `/api/health` is the only route the current backend ships, but `DeepHealth`
+ * also models the richer `/api/health/deep` payload, so both are accepted and
+ * normalised into one shape.
+ *
+ * When the API base is left same-origin and no backend answers, the Next.js SPA
+ * answers `/api/health` with a 404 HTML document. `apiFetch` surfaces that as an
+ * `ApiError` whose `body` is the markup, so both the success path and the
+ * error path are screened and re-thrown as "backend unreachable" — otherwise
+ * a page of `<!DOCTYPE html>` renders in the error panel.
+ */
 async function loadHealth(signal: AbortSignal): Promise<DeepHealth> {
-  try {
-    return normalizeDeepHealth(
-      await getHealth({ signal, timeout_ms: 8_000 }),
-    );
-  } catch (err) {
-    // A backend without the deep route still answers /api/health.
-    if (err instanceof Error && /\b404\b/.test(err.message)) {
-      return normalizeDeepHealth(
-        await getHealth({ signal, timeout_ms: 8_000 }),
-      );
-    }
-    throw err;
-  }
+  const payload = await apiCall(() => getHealth({ signal, timeout_ms: 8_000 }), "/api/health");
+  return normalizeDeepHealth(payload);
 }
 
-/** Metrics source with the same graceful degradation. */
+/** Metrics source with the same guard — metrics are optional, so it degrades. */
 async function loadMetrics(signal: AbortSignal): Promise<MetricsSnapshot> {
-  return getMetrics({ signal, timeout_ms: 12_000 });
+  return apiCallOr(() => getMetrics({ signal, timeout_ms: 12_000 }), "/api/metrics", {});
 }
 
 /** Health level for one probe. */
