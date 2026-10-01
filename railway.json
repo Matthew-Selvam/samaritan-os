@@ -2,11 +2,29 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "dockerfile",
+    "dockerfilePath": "Dockerfile",
     "context": "."
   },
   "deploy": {
-    "startCommand": "cd backend && python -m uvicorn main:app --host 0.0.0.0 --port $PORT",
-    "restartPolicyCondition": "on-failure",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
+  },
+  "environments": {
+    "production": {
+      "variables": {
+        "DEBUG": "false",
+        "OPSEC_ENABLED": "false",
+        "AUTH_DISABLED": "false",
+        "STORE_BACKEND": "sqlite",
+        "SQLITE_PATH": "/data/signal_os.db",
+        "LLM_ENABLED": "true",
+        "LLM_PROVIDER_ORDER": "openai,anthropic,deepseek,openrouter",
+        "LLM_ALLOW_LOCAL": "false",
+        "MAX_CONCURRENT_INVESTIGATIONS": "8",
+        "ALLOW_PRIVATE_NETWORK": "false"
+      }
+    }
   }
 }
