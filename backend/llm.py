@@ -120,6 +120,21 @@ def _env_str(name: str, default: str = "") -> str:
     return (os.getenv(name) or "").strip() or default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean env var.
+
+    Args:
+        name: Env var name.
+        default: Value when unset/blank.
+    Returns:
+        The parsed boolean, or ``default``.
+    """
+    raw = _env_str(name)
+    if not raw:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
 def _env_int(name: str, default: int) -> int:
     """Read an int env var, tolerating junk.
 
@@ -324,8 +339,17 @@ class Provider:
 
     @property
     def configured(self) -> bool:
-        """True when the provider has the static config it needs."""
-        return bool(self.key) if self.key_env else bool(self.base_url)
+        """True when the provider has the static config it needs.
+
+        For keyless providers (Ollama) this also requires explicit opt-in via
+        ``LLM_ALLOW_LOCAL``. A local daemon answering on its default port is
+        not consent to route a latency-critical pipeline through it: loading
+        multi-gigabyte weights per call is slow and memory-hungry, and on a
+        loaded host it simply times out. Opting in costs one env var.
+        """
+        if self.key_env:
+            return bool(self.key)
+        return bool(self.base_url) and _env_bool("LLM_ALLOW_LOCAL", False)
 
     def models(self) -> list[str]:
         """Model identifiers this provider is currently willing to serve."""
@@ -840,7 +864,13 @@ _PROVIDER_TYPES: dict[str, type[Provider]] = {
     "openrouter": OpenRouterProvider,
     "ollama": OllamaProvider,
 }
-DEFAULT_PROVIDER_ORDER = "openai,anthropic,deepseek,openrouter,ollama"
+# Ollama is deliberately absent from the default order. A local daemon is not
+# automatically a valid provider: it is reachable on a default port, loading
+# multi-gigabyte weights is slow and memory-hungry, and an unreachable or
+# saturated host turns every agent's AI pass into a timeout that stalls the
+# pipeline. Set LLM_ALLOW_LOCAL=true (and put "ollama" in
+# LLM_PROVIDER_ORDER) to opt in deliberately.
+DEFAULT_PROVIDER_ORDER = "openai,anthropic,deepseek,openrouter"
 
 
 # ── Loose JSON parsing ────────────────────────────────────────────────────────
