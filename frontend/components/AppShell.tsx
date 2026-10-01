@@ -67,7 +67,7 @@ import type {
 import { useInvestigationStream } from "@/lib/useInvestigationStream";
 import { useHotkeys } from "@/lib/shortcuts";
 import { DEFAULT_VIEW, VIEWS, isViewId, viewByHotkey, viewById, type ViewId } from "@/lib/views";
-import { useLocalStorage } from "@/lib/hooks";
+import { apiCall, useLocalStorage } from "@/lib/hooks";
 
 /** Lucide-free icon glyphs for the rail, keyed by the registry's icon names. */
 const RAIL_GLYPH: Record<string, string> = {
@@ -181,7 +181,10 @@ function Shell({ initialView, className }: AppShellProps) {
   /* ── History ── */
   const refreshHistory = useCallback(async () => {
     try {
-      const items = await listInvestigations({ limit: 40 }, { timeout_ms: 15_000 });
+      const items = await apiCall(
+        () => listInvestigations({ limit: 40 }, { timeout_ms: 15_000 }),
+        "/api/investigations",
+      );
       setHistory(items);
     } catch {
       /* Non-fatal: the rail shows the last known list. */
@@ -517,7 +520,10 @@ function Shell({ initialView, className }: AppShellProps) {
   const openCaseInGraph = useCallback(async (nextCaseId: string | null) => {
     if (!nextCaseId) return;
     try {
-      const rows = await getCaseEntities(nextCaseId, { timeout_ms: 20_000 });
+      const rows = await apiCall(
+        () => getCaseEntities(nextCaseId, { timeout_ms: 20_000 }),
+        `/api/cases/${nextCaseId}/entities`,
+      );
       setGraphCaseEntities(rows);
       setFocusEntityId(null);
       navigate("graph");

@@ -21,6 +21,7 @@ import {
 } from "@/lib/format";
 import type { Investigation, InvestigationStatus } from "@/lib/types";
 import { Badge, Button, EmptyState, ErrorState, Panel, SkeletonRows } from "./ui";
+import { apiCall } from "@/lib/hooks";
 import { inputTypeColor } from "./PipelineTrace";
 
 export interface CasePanelProps {
@@ -86,9 +87,13 @@ export function CasePanel({
     const controller = new AbortController();
     let cancelled = false;
     setLoading(true);
-    listInvestigations(
-      { case_id: caseId ?? undefined, limit },
-      { signal: controller.signal, timeout_ms: 15_000 },
+    apiCall(
+      () =>
+        listInvestigations(
+          { case_id: caseId ?? undefined, limit },
+          { signal: controller.signal, timeout_ms: 15_000 },
+        ),
+      "/api/investigations",
     )
       .then((items) => {
         if (cancelled) return;

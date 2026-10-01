@@ -1,4 +1,4 @@
-"""Temporary probe: does an appended router dependency actually EXECUTE?"""
+"""Temporary probe: does appending deps AFTER route decoration still apply?"""
 import pathlib
 import sys
 
@@ -10,46 +10,36 @@ from fastapi.testclient import TestClient
 CALLS: list[str] = []
 
 
-def dep_ctor(response: Response):
-    CALLS.append("ctor")
-    response.headers["X-Ctor"] = "1"
+def dep_a(response: Response):
+    CALLS.append("a")
+    response.headers["X-A"] = "1"
 
 
-def dep_append(response: Response):
-    CALLS.append("append")
-    response.headers["X-Append"] = "1"
+# Order 1: dependency appended BEFORE the route is declared
+r1 = APIRouter()
+r1.dependencies.append(Depends(dep_a))
 
 
-r_ctor = APIRouter(dependencies=[Depends(dep_ctor)])
+@r1.get("/before")
+async def before():
+    return {"r": "before"}
 
 
-@r_ctor.get("/ctor")
-async def ctor():
-    return {"r": "ctor"}
+# Order 2: route declared FIRST, dependency appended after (what api/*.py does)
+r2 = APIRouter()
 
 
-r_append = APIRouter()
-r_append.dependencies.append(Depends(dep_append))
+@r2.get("/after")
+async def after():
+    return {"r": "after"}
 
 
-@r_append.get("/append")
-async def append():
-    return {"r": "append"}
-
+r2.dependencies.append(Depends(dep_a))
 
 app = FastAPI()
-app.include_router(r_append)
-app.include_router(r_ctor)
+app.include_router(r1)
+app.include_router(r2)
 
 with TestClient(app) as c:
-    print("ctor  ->", c.get("/ctor").headers.get("x-ctor"), "calls:", list(CALLS))
-    print("append->", c.get("/append").headers.get("x-append"), "calls:", list(CALLS))
-
-# Does a router added to an app AFTER include_router pick up new routes?
-@r_append.get("/late")
-async def late():
-    return {"r": "late"}
-
-
-with TestClient(app) as c:
-    print("late  ->", c.get("/late").status_code)
+    print("before ->", c.get("/before").headers.get("x-a"), CALLS)
+    print("after  ->", c.get("/after").headers.get("x-a"), CALLS)

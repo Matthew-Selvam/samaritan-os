@@ -187,7 +187,11 @@ class ApexAgent(BaseAgent):
         emit_event: Callable[[dict], Awaitable[None]] | None = context.get("emit_event")
         context = {**context, "_queue": queue, "_events": []}
 
-        deadline = t0 + self.pipeline_budget_s
+        # Use a monotonic clock for the deadline: ``_start_timer`` returns
+        # an epoch timestamp (time.time) which cannot be compared against
+        # time.monotonic() elsewhere, and mixing the two makes the budget
+        # silently enormous instead of enforcing it.
+        deadline = time.monotonic() + self.pipeline_budget_s
         events = _EventLog(emit_event)
         started = time.monotonic()
         tokens_total = 0
