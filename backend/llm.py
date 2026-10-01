@@ -978,6 +978,21 @@ class LLM:
             if n in _PROVIDER_TYPES and n not in seen:
                 seen.add(n)
                 self.order.append(n)
+
+        # `LLM_ENABLED=false` is the operator's kill-switch for the whole AI
+        # tier. It is honoured here, at the one place every call path already
+        # passes through: emptying the order makes every agent fall back to the
+        # deterministic offline answer with no per-agent special-casing, and
+        # guarantees zero outbound model traffic. Previously the flag was read
+        # by nothing, so operators who set it saw no effect and kept paying the
+        # latency of a model they had switched off.
+        self.enabled = _env_bool("LLM_ENABLED", True)
+        if not self.enabled:
+            if self.order:
+                _log("llm", "LLM_ENABLED=false — AI tier disabled, all providers "
+                            "skipped; agents run deterministic-only", "info")
+            self.order = []
+
         self.providers: dict[str, Provider] = {
             name: _PROVIDER_TYPES[name]() for name in self.order
         }
@@ -1492,6 +1507,7 @@ class LLM:
             providers[name] = entry
         return {
             "ok": bool(ready),
+            "enabled": self.enabled,
             "primary": ready[0] if ready else None,
             "configured_providers": configured,
             "ready_providers": ready,
