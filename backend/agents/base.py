@@ -1,7 +1,7 @@
 """
 base.py — Base Agent class
 ===========================
-All Signal-OS agents inherit from this. Defines the contract:
+All Samaritan OS agents inherit from this. Defines the contract:
   - name / role / icon
   - run(input, context) → AgentResult
   - tool call interface
@@ -31,7 +31,7 @@ class AgentResult:
 
 
 class BaseAgent(ABC):
-    """Base class for all Signal-OS intelligence agents."""
+    """Base class for all Samaritan OS intelligence agents."""
 
     name: str = "BASE"
     role: str = "Generic agent"

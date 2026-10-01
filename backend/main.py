@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Signal-OS — FastAPI Backend
+Samaritan OS — FastAPI Backend
 ============================
 AI-Native Multimodal Intelligence Fusion Platform.
 
@@ -49,10 +49,10 @@ logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
     format=config.LOG_FORMAT,
 )
-log = logging.getLogger("signal-os")
+log = logging.getLogger("samaritan-os")
 
 app = FastAPI(
-    title="Signal-OS",
+    title="Samaritan OS",
     version="0.1.0",
     description="AI-Native Multimodal Intelligence Fusion Platform",
     docs_url="/api/docs" if config.DEBUG else None,
@@ -85,10 +85,10 @@ async def _startup_checks():
         # Serverless: no persistent infra is reachable here, and every cold
         # start would otherwise burn ~3s per probe against services that will
         # never answer. Every agent already degrades gracefully without them.
-        log.info("Signal-OS starting up on Vercel — skipping infra probes.")
+        log.info("Samaritan OS starting up on Vercel — skipping infra probes.")
         return
 
-    log.info("Signal-OS starting up — probing services…")
+    log.info("Samaritan OS starting up — probing services…")
 
     # PostgreSQL
     async def _pg():
@@ -243,7 +243,7 @@ async def _run_pipeline(inv_id: str, request: InvestigateRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "platform": "signal-os", "version": "0.1.0"}
+    return {"status": "ok", "platform": "samaritan-os", "version": "0.1.0"}
 
 @app.post("/api/investigate")
 async def submit_investigation(req: InvestigateRequest):

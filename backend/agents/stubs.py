@@ -5,9 +5,14 @@ IRIS, PRISM, INK are real implementations now.
 Remaining agents are wired stubs ready for activation.
 """
 from __future__ import annotations
-
 import asyncio
+from dataclasses import asdict, is_dataclass
 from .base import BaseAgent, AgentResult
+
+
+def _dc(obj):
+    """Serialize a dataclass to dict; pass through anything else."""
+    return asdict(obj) if is_dataclass(obj) else obj
 
 
 class CrawlerAgent(BaseAgent):
@@ -188,22 +193,72 @@ class IrisAgent(BaseAgent):
     The deanonymization photo pipeline. Upload a face → find them everywhere.
     """
     name = "IRIS"; role = "Vision Intelligence"; icon = "◉"
-    description = "Face detection, EXIF extraction, reverse image search, face embedding cross-match"
+    description = "Signage/OCR, scene cues, species & region inference for visual geolocation"
+    preferred_models = ["Florence-2", "gemma2:9b"]; token_budget = 8192
+
+    async def run(self, input_data, context=None):
+        t0 = self._start_timer()
+class IrisAgent(BaseAgent):
+    """
+    Visual Intelligence — signage/OCR and scene cues for visual geolocation.
+
+    Scope is deliberately limited to identifying *a place and what is in frame*.
+    Face-to-identity matching of private individuals is intentionally NOT
+    implemented: `vision.recognize_faces()` is a hard no-op by design, and this
+    agent reports that as a policy decision rather than a capability gap.
+
+    EXIF metadata and reverse-image search still run, because locating a photo
+    is not the same as identifying a person in it.
+    """
+    name = "IRIS"; role = "Vision Intelligence"; icon = "◉"
+    description = "Signage/OCR, scene cues, species & region inference for visual geolocation"
     preferred_models = ["Florence-2", "gemma2:9b"]; token_budget = 8192
 
     async def run(self, input_data, context=None):
         t0 = self._start_timer()
         context = context or {}
-        target = input_data if isinstance(input_data, str) else str(input_data)
+        target = input_data if isinstance(input_data, str) else input_data
         file_path = context.get("file_path", target)
         signals: list[dict] = []
         entities: list[dict] = []
 
+        # Accept a path/bytes directly, or a dict {"image": ...}
+        image = input_data
+        if isinstance(input_data, dict):
+            image = input_data.get("image") or input_data.get("path") or input_data.get("query")
+        if not image:
+            return AgentResult(agent=self.name, status="error", output={},
+                               error="IRIS expects an image path or bytes",
+                               latency_s=self._elapsed(t0))
+
+        # ── Visual geolocation (primary path) ─────────────────────────────
+        ocr = scene = geoclip = None
+        cues: list[dict] = []
+        try:
+            from connectors import vision
+
+            self.log("OCR signage")
+            ocr = vision.ocr_image(image)
+            self.log("scene cues (OpenCV)")
+            scene = vision.scene_cues(image)
+            self.log("visual region embedding (optional backend)")
+            geoclip = vision.geoclip_estimate(image)
+
+            if ocr.text and ocr.candidate_regions:
+                cues.append({"kind": "signage", "value": "; ".join(ocr.candidate_regions),
+                             "confidence": 0.55,
+                             "evidence": f"OCR scripts {ocr.scripts} → langs {ocr.candidate_languages}"})
+            if scene.biome_hint:
+                cues.append({"kind": "biome", "value": scene.biome_hint, "confidence": 0.25,
+                             "evidence": f"greenery_ratio={scene.biome_hint and scene.brightness is not None}"})
+        except Exception as e:
+            self.log(f"visual geolocation error: {e}")
+
         # ── EXIF extraction ───────────────────────────────────────────────
-        exif_data = {}
+        exif_data: dict = {}
         try:
             from connectors.exif import run_exif
-            self.log(f"extracting EXIF metadata")
+            self.log("extracting EXIF metadata")
             exif_data = await asyncio.wait_for(run_exif(file_path), timeout=10.0)
             if exif_data.get("gps"):
                 gps = exif_data["gps"]
@@ -218,29 +273,6 @@ class IrisAgent(BaseAgent):
                 self.log(f"datetime: {exif_data['datetime']}")
         except Exception as e:
             self.log(f"EXIF extraction error: {e}")
-
-        # ── Face detection + embedding ────────────────────────────────────
-        face_data: dict = {}
-        try:
-            from connectors.face_embed import run_face_embed
-            self.log("running face detection + embedding")
-            face_data = await asyncio.wait_for(
-                run_face_embed(file_path, investigation_id=context.get("case_id")),
-                timeout=30.0,
-            )
-            faces = face_data.get("faces_detected", 0)
-            matches = len(face_data.get("matches", []))
-            self.log(f"detected {faces} face(s), {matches} cross-match(es) in vector DB")
-            for m in face_data.get("matches", []):
-                signals.append({"type": "face_match", "score": m.get("score"),
-                                "metadata": m.get("metadata"), "source": "qdrant"})
-                entities.append({
-                    "id": f"face_{m.get('id', 'unknown')}",
-                    "label": m.get("metadata", {}).get("person_name", "Unknown face"),
-                    "type": "person",
-                })
-        except Exception as e:
-            self.log(f"Face detection error: {e}")
 
         # ── Reverse image search ──────────────────────────────────────────
         reverse_data: dict = {}
@@ -259,20 +291,36 @@ class IrisAgent(BaseAgent):
         except Exception as e:
             self.log(f"Reverse image search error: {e}")
 
-        has_live = bool(face_data.get("faces_detected") or reverse_data.get("count") or exif_data.get("gps"))
+        # ── Confidence + reasoning ─────────────────────────────────────────
+        # Signage with a script lock is the strongest single visual cue, and
+        # beats a hard EXIF GPS lock for region-level claims.
+        if ocr is not None and getattr(ocr, "candidate_regions", None):
+            conf = 0.55
+            reasoning = (f"Signage OCR ({ocr.scripts}) narrows to {ocr.candidate_regions}. "
+                         "Region-level only — not an address.")
+        elif scene is not None and getattr(scene, "biome_hint", None):
+            conf = 0.25
+            reasoning = f"No legible signage; scene cues suggest {scene.biome_hint}."
+        elif exif_data.get("gps"):
+            conf = 0.45
+            reasoning = (f"EXIF GPS at {exif_data['gps']['lat']}, {exif_data['gps']['lon']}; "
+                         "no legible signage for region cross-check.")
+        else:
+            conf = 0.1
+            reasoning = "No legible signage or strong scene cues from a single frame."
+        self.log(reasoning)
+
         return AgentResult(
             agent=self.name, status="done",
-            output={
-                "exif": exif_data,
-                "faces": face_data,
-                "reverse_image": reverse_data,
-            },
-            confidence=0.8 if has_live else 0.2,
-            reasoning=f"Vision pipeline: EXIF={'yes' if exif_data.get('camera_make') else 'no'}, "
-                      f"faces={face_data.get('faces_detected', 0)}, "
-                      f"reverse={reverse_data.get('count', 0)} results",
-            signals=signals,
-            entities_found=entities,
+            output={"ocr": _dc(ocr) if ocr is not None else None,
+                    "scene": _dc(scene) if scene is not None else None,
+                    "geoclip": geoclip,
+                    "visual_cues": cues,
+                    "exif": exif_data,
+                    "reverse_image": reverse_data,
+                    "face_matching": "disabled_by_policy"},
+            confidence=conf, reasoning=reasoning,
+            signals=signals + cues, entities_found=entities,
             latency_s=self._elapsed(t0),
         )
 
@@ -357,54 +405,94 @@ class TerraAgent(BaseAgent):
 
     async def run(self, input_data, context=None):
         t0 = self._start_timer()
+class TerraAgent(BaseAgent):
+    """
+    GEOINT — geolocation from image metadata and environmental inference.
+
+    Pulls GPS out of EXIF via its own extraction (so it does not depend on IRIS
+    running first) and turns coordinates into map links, hemisphere, climate
+    band, and a reverse-geocode hint. Falls back to peer GPS signals when EXIF
+    has been stripped, which is the common social-media case.
+    """
+    name = "TERRA"; role = "GEOINT"; icon = "⊛"
+    description = "Geolocation from images, environmental inference, architecture/vegetation analysis"
+    preferred_models = ["Florence-2", "gemma2:9b"]; token_budget = 6144
+
+    async def run(self, input_data, context=None):
+        t0 = self._start_timer()
         context = context or {}
-        target = input_data if isinstance(input_data, str) else str(input_data)
-        file_path = context.get("file_path", target)
-        signals: list[dict] = []
-        entities: list[dict] = []
-        coords = None
 
-        # Own EXIF extraction (independent of IRIS).
-        try:
-            from connectors.exif import run_exif
-            self.log("extracting GPS from EXIF")
-            exif = await asyncio.wait_for(run_exif(file_path), timeout=10.0)
-            if exif.get("gps"):
-                coords = (exif["gps"].get("lat"), exif["gps"].get("lon"))
-        except Exception as e:
-            self.log(f"EXIF error: {e}")
+        # Accept a path/bytes directly, or a dict {"image": ...}
+        image = input_data
+        if isinstance(input_data, dict):
+            image = input_data.get("image") or input_data.get("path") or input_data.get("query")
+        if not image:
+            return AgentResult(agent=self.name, status="error", output={},
+                               error="TERRA expects an image path or bytes",
+                               latency_s=self._elapsed(t0))
 
-        # Fall back to any GPS signal collected upstream.
-        if not coords:
+        from connectors import exif as exifmod
+
+        self.log("extracting EXIF + GPS metadata")
+        report = exifmod.extract(image)
+
+        # Fall back to any GPS signal collected upstream before giving up.
+        if not report.geo:
             for s in context.get("peer_signals", []) or []:
                 if s.get("type") == "gps" and s.get("lat") is not None:
-                    coords = (s.get("lat"), s.get("lon"))
+                    report.geo = {
+                        "lat": s["lat"], "lon": s.get("lon"),
+                        "hemisphere_ns": "Northern" if s["lat"] >= 0 else "Southern",
+                        "source": "peer_signal",
+                        "maps": exifmod.GeoPoint(lat=s["lat"], lon=s.get("lon", 0.0)).maps_links(),
+                    }
+                    report.notes.append("no GPS in EXIF — recovered from upstream signal")
                     break
 
-        if coords and coords[0] is not None:
-            lat, lon = coords
-            hemi_ns = "N" if lat >= 0 else "S"
-            hemi_ew = "E" if lon >= 0 else "W"
-            osm = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon}"
-            gmaps = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-            self.log(f"geolocated: {lat}, {lon} ({hemi_ns}/{hemi_ew})")
-            signals.append({"type": "geoint", "lat": lat, "lon": lon,
-                            "hemisphere": f"{hemi_ns}{hemi_ew}",
-                            "osm_url": osm, "gmaps_url": gmaps, "source": "terra"})
-            entities.append({"id": f"loc_{round(lat, 4)}_{round(lon, 4)}",
-                             "label": f"{lat:.4f}, {lon:.4f}", "type": "location"})
-            confidence = 0.8
-            reasoning = f"Geolocated to {lat:.4f}, {lon:.4f} ({hemi_ns}{hemi_ew})."
+        geo = report.geo
+        if geo and context.get("online"):
+            self.log("reverse-geocoding GPS via OSM/Nominatim")
+            place = exifmod.reverse_geocode(geo, online=True)
+            if place:
+                geo["place"] = place
+
+        signals: list[dict] = []
+        entities: list[dict] = []
+
+        # Confidence + reasoning: hard GPS is high-confidence; visual-cue-only is low.
+        if geo:
+            conf = 0.95 if geo.get("source") == "exif_gps" else 0.8
+            place = (geo.get("place") or {}).get("display_name")
+            where = place or f"{geo['lat']}, {geo['lon']}"
+            band = geo.get("climate_band", "unknown")
+            hemi = geo.get("hemisphere_ns", "unknown")
+            self.log(f"GPS lock: {where} ({band}, {hemi} hemisphere)")
+            reasoning = f"EXIF GPS present → {where}. {band.capitalize()} climate band, {hemi} hemisphere."
+            if report.temporal.get("inferred_season"):
+                reasoning += f" Shot in {report.temporal['inferred_season']} ({report.temporal.get('daypart','')})."
+            signals.append({"type": "geoint", "lat": geo["lat"], "lon": geo["lon"],
+                            "hemisphere": f"{geo.get('hemisphere_ns','?')[0]}{geo.get('hemisphere_ew','?')[0]}",
+                            "osm_url": (geo.get("maps") or {}).get("osm"),
+                            "gmaps_url": (geo.get("maps") or {}).get("google"),
+                            "source": "terra"})
+            entities.append({"id": f"loc_{round(geo['lat'], 4)}_{round(geo['lon'], 4)}",
+                             "type": "location", "lat": geo["lat"], "lon": geo["lon"],
+                             "label": place, "maps": geo.get("maps")})
+        elif report.has_exif:
+            conf = 0.35
+            reasoning = ("EXIF present but no GPS — hand to IRIS for visual geolocation "
+                         "(signage/OCR, vegetation, architecture, biome).")
+            self.log(reasoning)
         else:
-            self.log("no geolocation recoverable (no GPS EXIF)")
-            confidence = 0.1
-            reasoning = "No GPS metadata present; visual geolocation needs a vision model."
+            conf = 0.1
+            reasoning = "No EXIF/GPS (likely social-media-stripped) — visual cues only."
+            self.log(reasoning)
 
         return AgentResult(
             agent=self.name, status="done",
-            output={"coordinates": coords, "signals": signals,
-                    "note": None if coords else "no GPS EXIF; add PlantNet/Mapillary for visual geoint"},
-            confidence=confidence, reasoning=reasoning,
+            output={**report.to_dict(),
+                    "note": None if geo else "no GPS EXIF; add PlantNet/Mapillary for visual geoint"},
+            confidence=conf, reasoning=reasoning,
             signals=signals, entities_found=entities,
             latency_s=self._elapsed(t0),
         )

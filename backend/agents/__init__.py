@@ -1,5 +1,5 @@
 """
-Signal-OS Agent Registry
+Samaritan OS Agent Registry
 ========================
 14 specialist agents, each with a defined role, tool set, and model assignment.
 """
