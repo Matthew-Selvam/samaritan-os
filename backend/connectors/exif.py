@@ -14,16 +14,23 @@ What it does (legitimately scoped — identifies *a place and what's in frame*):
 
 Optional online reverse-geocode (Nominatim/OSM) is gated behind `online=True`
 and degrades gracefully to offline-only output if unavailable.
+
+This module also keeps the async `ExifConnector` / `run_exif` surface the
+IRIS and TERRA agents call. Both paths share the single offline parser below,
+so a GPS fix lands in one place.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
 from PIL import Image, ExifTags
+
+from opsec import OpsecClient
 
 # Reverse maps: tag name -> id
 _TAG_BY_NAME = {v: k for k, v in ExifTags.TAGS.items()}
@@ -114,7 +121,7 @@ def _dms_to_decimal(dms, ref: str | None) -> float | None:
     except (TypeError, IndexError):
         return None
     dec = d + m / 60.0 + s / 3600.0
-    if ref and ref.upper() in ("S", "W"):
+    if ref and str(ref).upper() in ("S", "W"):
         dec = -dec
     return round(dec, 6)
 
@@ -149,19 +156,24 @@ def _season(month: int, hemisphere: str) -> str:
 def extract(image_path_or_bytes: str | bytes) -> GeoReport:
     """
     Parse an image (path or raw bytes) into a GeoReport.
-    Pure-local, never touches the network.
+    Pure-local, never touches the network, never raises on bad input.
     """
     report = GeoReport()
 
-    if isinstance(image_path_or_bytes, (bytes, bytearray)):
-        img = Image.open(io.BytesIO(image_path_or_bytes))
-    else:
-        if not os.path.exists(image_path_or_bytes):
-            report.notes.append(f"file not found: {image_path_or_bytes}")
-            return report
-        img = Image.open(image_path_or_bytes)
+    try:
+        if isinstance(image_path_or_bytes, (bytes, bytearray)):
+            img = Image.open(io.BytesIO(image_path_or_bytes))
+        else:
+            if not os.path.exists(image_path_or_bytes):
+                report.notes.append(f"file not found: {image_path_or_bytes}")
+                return report
+            img = Image.open(image_path_or_bytes)
 
-    exif = img.getexif()
+        exif = img.getexif()
+    except Exception as exc:
+        report.notes.append(f"unreadable image: {type(exc).__name__}: {exc}")
+        return report
+
     if not exif:
         report.notes.append("no EXIF block — likely stripped (common on social platforms)")
         return report
@@ -173,15 +185,13 @@ def extract(image_path_or_bytes: str | bytes) -> GeoReport:
         if tid and tid in exif:
             report.camera[name] = str(exif[tid]).strip("\x00 ")
 
-    # Timestamp — prefer EXIF SubIFD DateTimeOriginal, fall back to DateTime
-    sub = exif.get_ifd(_TAG_BY_NAME.get("ExifOffset", 0x8769)) if hasattr(exif, "get_ifd") else {}
+    # Timestamp — prefer the EXIF SubIFD DateTimeOriginal, fall back to DateTime
+    sub = exif.get_ifd(0x8769) if hasattr(exif, "get_ifd") else {}
     dt_raw, dt_src = None, None
     if sub:
         for name, src in (("DateTimeOriginal", "exif_original"),
                           ("DateTimeDigitized", "exif_digitized")):
-            tid = _GPS_TAG_BY_NAME.get(name) or _TAG_BY_NAME.get(name)
-            # SubIFD uses standard TAGS ids
-            tid = {v: k for k, v in ExifTags.TAGS.items()}.get(name)
+            tid = _TAG_BY_NAME.get(name)
             if tid and tid in sub:
                 dt_raw, dt_src = str(sub[tid]), src
                 break
@@ -202,7 +212,7 @@ def extract(image_path_or_bytes: str | bytes) -> GeoReport:
         report.timestamp_source = dt_src
 
     # GPS
-    gps_ifd = exif.get_ifd(_TAG_BY_NAME.get("GPSInfo", 0x8825)) if hasattr(exif, "get_ifd") else {}
+    gps_ifd = exif.get_ifd(0x8825) if hasattr(exif, "get_ifd") else {}
     geo = _parse_gps(gps_ifd) if gps_ifd else None
     if geo:
         report.geo = {
@@ -253,9 +263,9 @@ def reverse_geocode(geo: dict, *, online: bool = False, timeout: float = 6.0) ->
     if not online or not geo:
         return None
     try:
-        import urllib.request
-        import urllib.parse
         import json
+        import urllib.parse
+        import urllib.request
         q = urllib.parse.urlencode({"lat": geo["lat"], "lon": geo["lon"],
                                     "format": "jsonv2", "zoom": "14"})
         req = urllib.request.Request(
@@ -274,3 +284,93 @@ def reverse_geocode(geo: dict, *, online: bool = False, timeout: float = 6.0) ->
         }
     except Exception:
         return None
+
+
+# --------------------------------------------------------------------------- #
+#  Async connector surface (IRIS / TERRA agents, OPSEC-routed geocoding)
+# --------------------------------------------------------------------------- #
+class ExifConnector:
+    """Async wrapper over the offline parser, with OPSEC-routed geocoding.
+
+    GPS parsing is delegated to `extract()` so the sync and async paths can
+    never drift apart. Reverse geocoding goes through the OPSEC layer, which
+    is the only permitted egress path for this connector.
+    """
+
+    def __init__(self) -> None:
+        self._client = OpsecClient()
+
+    async def extract(self, file_path_or_bytes: str | bytes) -> dict[str, Any]:
+        """Extract EXIF from a file path or raw bytes."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._extract_sync, file_path_or_bytes)
+
+    def _extract_sync(self, source: str | bytes) -> dict[str, Any]:
+        """Synchronous EXIF extraction — runs in an executor."""
+        report = extract(source)
+        return {
+            "camera_make": report.camera.get("Make"),
+            "camera_model": report.camera.get("Model"),
+            "software": report.camera.get("Software"),
+            "datetime": report.timestamp,
+            "orientation": report.camera.get("Orientation"),
+            "gps": (
+                {"lat": report.geo["lat"], "lon": report.geo["lon"],
+                 "altitude": report.geo.get("altitude_m"),
+                 "maps": report.geo.get("maps"), "address": None}
+                if report.geo else None
+            ),
+            "raw": dict(report.camera),
+            "notes": report.notes,
+        }
+
+    @staticmethod
+    def _gps_to_decimal(coords: Any, ref: str) -> float | None:
+        """Convert EXIF GPS (degrees, minutes, seconds) to decimal."""
+        return _dms_to_decimal(coords, ref)
+
+    async def reverse_geocode(self, lat: float, lon: float) -> str | None:
+        """Convert GPS coords to a human-readable address via Nominatim (through OPSEC)."""
+        try:
+            resp = await self._client.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={
+                    "format": "jsonv2",
+                    "lat": str(lat),
+                    "lon": str(lon),
+                    "zoom": 18,
+                    "addressdetails": 1,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("display_name")
+        except Exception:
+            return None
+
+    @staticmethod
+    def strip_exif(file_path: str, output_path: str | None = None) -> str:
+        """Remove ALL EXIF from an image file. Returns output path."""
+        img = Image.open(file_path)
+        data = list(img.getdata())
+        clean = Image.new(img.mode, img.size)
+        clean.putdata(data)
+        out = output_path or file_path
+        clean.save(out)
+        return out
+
+    async def close(self) -> None:
+        await self._client.close()
+
+
+async def run_exif(file_path: str, **kwargs: Any) -> dict[str, Any]:
+    """Top-level entry point for EXIF extraction + optional geocoding."""
+    connector = ExifConnector()
+    try:
+        result = await connector.extract(file_path)
+        gps = result.get("gps")
+        if gps and gps.get("lat") is not None and gps.get("lon") is not None:
+            gps["address"] = await connector.reverse_geocode(gps["lat"], gps["lon"])
+        return result
+    finally:
+        await connector.close()

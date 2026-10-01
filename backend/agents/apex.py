@@ -26,6 +26,12 @@ class ApexAgent(BaseAgent):
     preferred_models = ["qwen2.5:7b", "gemma2:9b", "claude-opus-4"]
     token_budget = 16384
 
+    # Second-tier agents that reason over the *aggregated* output of the primary
+    # swarm. They must run AFTER collection, in dependency order, each receiving
+    # the peer signals/entities gathered so far — never concurrently with the
+    # producers, or they would correlate an empty set.
+    CORRELATION_TIER: list[str] = ["NEXUS", "KRONOS", "VAULT", "SENTINEL", "QUILL"]
+
     async def run(self, input_data: str | dict, context: dict | None = None) -> AgentResult:
         t0 = self._start_timer()
         context = context or {}
@@ -50,10 +56,16 @@ class ApexAgent(BaseAgent):
             # without clobbering an explicit caller-provided override.
             context["input_type"] = context.get("input_type") or decision.input_type.value
 
-            # ── 2. Activate the swarm from the routing decision ───────────────
+            # ── 2. Activate the primary swarm (correlation tier deferred) ─────
             registry = self._registry()
+            primary_names = [n for n in decision.agents if n not in self.CORRELATION_TIER]
+            # The correlation tier is universal: every investigation ends with
+            # graph correlation, timeline reconstruction, and a report — even if
+            # the routing map didn't list them.
+            deferred_names = list(self.CORRELATION_TIER)
+
             agents: list[BaseAgent] = []
-            for agent_name in decision.agents:
+            for agent_name in primary_names:
                 cls = registry.get(agent_name)
                 if cls is None:
                     self.log(f"⚠ no implementation registered for {agent_name} — skipping")
@@ -63,20 +75,46 @@ class ApexAgent(BaseAgent):
                 agents.append(agent)
 
             self.log(
-                f"activating {len(agents)} agents concurrently: "
+                f"activating {len(agents)} primary agents concurrently: "
                 f"{', '.join(a.name for a in agents)}"
             )
 
-            # ── 3. Run them all in parallel ───────────────────────────────────
+            # ── 3. Run the primary swarm in parallel ──────────────────────────
             results: list[AgentResult] = await asyncio.gather(
                 *(self._safe_run(a, raw, context) for a in agents)
             )
+            agent_results = [self._serialize(a, r) for a, r in zip(agents, results)]
+
+            # ── 3b. Correlation tier — sequential, over aggregated signals ────
+            entities = [e for r in results for e in (r.entities_found or [])]
+            signals = [s for r in results for s in (r.signals or [])]
+
+            deferred = deferred_names
+            if deferred:
+                self.log(f"running correlation tier: {', '.join(deferred)}")
+            for agent_name in deferred:
+                cls = registry.get(agent_name)
+                if cls is None:
+                    continue
+                agent = cls()
+                agent.attach_stream(queue)
+                corr_ctx = {
+                    **context,
+                    "peer_signals": signals,
+                    "peer_entities": entities,
+                    "agent_results": agent_results,
+                }
+                r = await self._safe_run(agent, raw, corr_ctx)
+                agents.append(agent)
+                results.append(r)
+                agent_results.append(self._serialize(agent, r))
+                # Fold correlation-tier discoveries back into the aggregate so a
+                # later tier agent (e.g. QUILL after NEXUS) sees them.
+                entities += r.entities_found or []
+                signals += r.signals or []
 
             # ── 4. Synthesize ─────────────────────────────────────────────────
             self.log("synthesizing agent outputs into investigation result…")
-            agent_results = [self._serialize(a, r) for a, r in zip(agents, results)]
-            entities = [e for r in results for e in (r.entities_found or [])]
-            signals = [s for r in results for s in (r.signals or [])]
 
             confs = [r.confidence for r in results if r.confidence and r.confidence > 0]
             agg_conf = round(sum(confs) / len(confs), 3) if confs else decision.confidence
@@ -86,15 +124,26 @@ class ApexAgent(BaseAgent):
                 self.log(f"⚠ {len(errored)} agent(s) errored: {', '.join(errored)}")
             self.log(f"synthesis complete — {len(agent_results)} agents, confidence {agg_conf:.0%}")
 
+            # Pull correlation-tier products to the top level for the dashboard.
+            def _agent_output(name: str) -> dict:
+                return next((r.get("output") or {} for r in agent_results
+                             if r.get("agent") == name), {})
+            graph = _agent_output("NEXUS")
+            timeline = _agent_output("KRONOS")
+            report_md = _agent_output("QUILL").get("markdown")
+
             output = {
                 "input": raw[:500],
                 "input_type": decision.input_type.value,
                 "routing_confidence": decision.confidence,
                 "routing_reasoning": decision.reasoning,
-                "agents_activated": decision.agents,
+                "agents_activated": primary_names + deferred_names,
                 "agent_results": agent_results,
                 "entities": entities,
                 "signals": signals,
+                "graph": {"nodes": graph.get("nodes", []), "edges": graph.get("edges", [])},
+                "timeline": timeline.get("events", []),
+                "report_markdown": report_md,
             }
 
             return AgentResult(

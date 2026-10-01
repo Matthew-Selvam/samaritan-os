@@ -14,3 +14,4 @@ python-dotenv>=1.0.0
 # OSINT connectors
 shodan>=1.31.0
 sherlock-project>=0.14.0
+phonenumbers>=8.13.0

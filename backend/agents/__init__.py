@@ -7,15 +7,18 @@ Samaritan OS Agent Registry
 from .base import BaseAgent, AgentResult
 from .scout import ScoutAgent
 from .sigma import SigmaAgent
+from .phonos import PhonosAgent
 from .stubs import (
     CrawlerAgent, IrisAgent, EchoAgent, PrismAgent,
     NexusAgent, KronosAgent, VaultAgent, SentinelAgent,
-    QuillAgent, TerraAgent, InkAgent,
+    EmailAgent, QuillAgent, TerraAgent, InkAgent,
 )
 from .apex import ApexAgent  # master supervisor
 
 AGENT_REGISTRY: dict[str, type[BaseAgent]] = {
     "SCOUT":    ScoutAgent,
+    "PHONOS":   PhonosAgent,
+    "EMAIL":    EmailAgent,
     "CRAWLER":  CrawlerAgent,
     "IRIS":     IrisAgent,
     "ECHO":     EchoAgent,

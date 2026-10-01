@@ -19,3 +19,9 @@ out/
 .DS_Store
 *.log
 .cache/
+
+# Signal-OS runtime stores (agent memory / monitoring snapshots)
+backend/vault_store/
+backend/sentinel_store/
+backend/reports/
+.vercel

@@ -1,0 +1,27 @@
+# Python
+backend/.venv
+backend/__pycache__
+backend/*.pyc
+backend/.pytest_cache
+
+# Frontend
+node_modules
+.next
+
+# Git
+.git
+.gitignore
+
+# Misc
+*.log
+.DS_Store
+.env.local
+backend/vault_store
+backend/sentinel_store
+backend/reports
+
+# Tests
+**/*.test.js
+**/*.test.ts
+**/*.spec.js
+**/*.spec.ts

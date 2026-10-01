@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "name": "signal-os",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" }
+  ],
+  "env": {
+    "OPSEC_ENABLED": "false",
+    "VAULT_DIR": "/tmp/signal-os/vault_store",
+    "SENTINEL_DIR": "/tmp/signal-os/sentinel_store",
+    "DEBUG": "false"
+  }
+}
