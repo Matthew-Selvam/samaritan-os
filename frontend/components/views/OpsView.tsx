@@ -370,7 +370,12 @@ export function OpsView({ className }: OpsViewProps) {
                       onRetry={opsecResource.reload}
                     />
                   ) : !opsecView ? (
-                    <EmptyState compact glyph="◌" title="NO OPSEC DATA" />
+                    <EmptyState
+                      compact
+                      glyph="◌"
+                      title="NO OPSEC DATA"
+                      description="The opsec endpoint returned no circuit state. Check that OPSEC_ENABLED is set on the backend, then retry."
+                    />
                   ) : (
                     <div className="flex flex-col gap-3">
                       <div className="flex flex-wrap items-center gap-2">
@@ -446,7 +451,12 @@ export function OpsView({ className }: OpsViewProps) {
 
                 <Panel eyebrow="RAW" title="Opsec payload" bodyClassName="!p-0">
                   {Object.keys(rawOps).length === 0 ? (
-                    <EmptyState compact glyph="◌" title="NO PAYLOAD" />
+                    <EmptyState
+                      compact
+                      glyph="◌"
+                      title="NO PAYLOAD"
+                      description="The raw inspector mirrors /api/opsec/status exactly; an empty object means the endpoint answered with no fields."
+                    />
                   ) : (
                     <pre className="scroll-thin m-0 max-h-[320px] overflow-auto p-2 text-[9px] leading-relaxed text-ink-muted">
                       {JSON.stringify(
@@ -511,7 +521,12 @@ export function OpsView({ className }: OpsViewProps) {
                     <div className="grid gap-2 lg:grid-cols-3">
                       <Panel eyebrow="COUNTERS" title="Counters" bodyClassName="!p-0">
                         {counters.length === 0 ? (
-                          <EmptyState compact glyph="◌" title="NO COUNTERS" />
+                          <EmptyState
+                            compact
+                            glyph="◌"
+                            title="NO COUNTERS"
+                            description="Monotonic counters appear once the backend has served traffic. Reset the process to zero them."
+                          />
                         ) : (
                           <div className="scroll-thin max-h-[280px] overflow-y-auto">
                             <ul className="m-0 flex list-none flex-col">
@@ -535,7 +550,12 @@ export function OpsView({ className }: OpsViewProps) {
 
                       <Panel eyebrow="TIMINGS" title="Operations" bodyClassName="!p-0">
                         {timings.length === 0 ? (
-                          <EmptyState compact glyph="◌" title="NO TIMINGS" />
+                          <EmptyState
+                            compact
+                            glyph="◌"
+                            title="NO TIMINGS"
+                            description="Per-operation timings are recorded on first call. Run an investigation and this fills in."
+                          />
                         ) : (
                           <div className="scroll-thin max-h-[280px] overflow-y-auto">
                             <ul className="m-0 flex list-none flex-col">
@@ -565,7 +585,12 @@ export function OpsView({ className }: OpsViewProps) {
 
                       <Panel eyebrow="GAUGES" title="Instantaneous" bodyClassName="!p-0">
                         {gauges.length === 0 ? (
-                          <EmptyState compact glyph="◌" title="NO GAUGES" />
+                          <EmptyState
+                            compact
+                            glyph="◌"
+                            title="NO GAUGES"
+                            description="Gauges are instantaneous values such as active agents. They register once the pipeline runs."
+                          />
                         ) : (
                           <div className="scroll-thin max-h-[280px] overflow-y-auto">
                             <ul className="m-0 flex list-none flex-col">
@@ -681,7 +706,11 @@ export function OpsView({ className }: OpsViewProps) {
                 ) : health.state === "error" ? (
                   <ErrorState message={health.error} onRetry={health.reload} />
                 ) : connectors.length === 0 ? (
-                  <EmptyState glyph="⚡" title="NO CONNECTORS REPORTED" />
+                  <EmptyState
+                      glyph="⚡"
+                      title="NO CONNECTORS REPORTED"
+                      description="Connector availability comes from /api/agents. This backend either omits the field or has no connectors configured — individual agents still run, just without live enrichment."
+                    />
                 ) : (
                   <Table
                     columns={connectorColumns}

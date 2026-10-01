@@ -231,7 +231,7 @@ export function CommandPalette({
   return (
     <div
       className="fixed inset-0 z-[1000] flex items-start justify-center pt-[10vh] px-4"
-      style={{ background: "rgba(2,6,10,0.78)", backdropFilter: "blur(2px)" }}
+      style={{ background: "var(--scrim)", backdropFilter: "blur(2px)" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -357,8 +357,8 @@ export function CommandPalette({
               style={{
                 fontSize: 9,
                 color: "var(--green)",
-                background: "rgba(0,255,136,0.07)",
-                border: "1px solid rgba(0,255,136,0.25)",
+                background: "var(--tint-accent-07)",
+                border: "1px solid var(--line-accent-25)",
               }}
             >
               <CornerDownLeft size={9} strokeWidth={2} aria-hidden="true" />
@@ -378,7 +378,7 @@ function SectionHeading({ label, count }: { label: string; count: number }) {
   return (
     <div
       className="px-3 pt-2 pb-1 label"
-      style={{ fontSize: 8, borderBottom: "1px solid rgba(30,45,61,0.6)" }}
+      style={{ fontSize: 8, borderBottom: "1px solid var(--line-hairline)" }}
       aria-hidden="true"
     >
       {label} · {count}
@@ -439,7 +439,7 @@ function PaletteRow({
       onClick={onClick}
       className="flex items-center gap-2 px-3 py-1.5 cursor-pointer"
       style={{
-        background: selected ? "rgba(0,255,136,0.08)" : "transparent",
+        background: selected ? "var(--tint-accent-08)" : "transparent",
         borderLeft: `2px solid ${selected ? "var(--green)" : "transparent"}`,
       }}
     >

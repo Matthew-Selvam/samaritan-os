@@ -137,11 +137,11 @@ export function PhotoUpload({
         position: "relative",
         border: `2px dashed ${isDragging ? "var(--green)" : "var(--border-hi)"}`,
         borderRadius: 10,
-        background: isDragging ? "rgba(0,255,136,0.04)" : "var(--bg-card)",
+        background: isDragging ? "var(--tint-accent-04)" : "var(--bg-card)",
         padding: hasFile ? 16 : 32,
         textAlign: "center",
         transition: "border-color 0.25s ease, background 0.25s ease, box-shadow 0.25s ease",
-        boxShadow: isDragging ? "0 0 24px rgba(0,255,136,0.08)" : "none",
+        boxShadow: isDragging ? "0 0 24px var(--tint-accent-08)" : "none",
       }}
     >
       <input
@@ -265,7 +265,7 @@ function MediaPreview({
   return (
     <div
       className="relative overflow-hidden rounded-lg border border-border-strong"
-      style={{ boxShadow: "0 0 20px rgba(0,212,255,0.06)" }}
+      style={{ boxShadow: "0 0 20px var(--tint-info-06)" }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
@@ -278,7 +278,7 @@ function MediaPreview({
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,136,0.015) 2px, rgba(0,255,136,0.015) 4px)",
+            "repeating-linear-gradient(0deg, transparent, transparent 2px, var(--tint-accent-02) 2px, var(--tint-accent-02) 4px)",
         }}
       />
     </div>

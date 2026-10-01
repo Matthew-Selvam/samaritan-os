@@ -704,7 +704,17 @@ export function Table<T>({
   }
 
   if (rows.length === 0) {
-    return <>{empty ?? <EmptyState title="No rows" compact />}</>;
+    return (
+      <>
+        {empty ?? (
+          <EmptyState
+            title="NO ROWS"
+            description="Nothing matched the current filter. Clear it to see everything available."
+            compact
+          />
+        )}
+      </>
+    );
   }
 
   return (
@@ -894,7 +904,7 @@ export function Modal({
   return createPortal(
     <div
       className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto p-4 sm:p-8"
-      style={{ background: "rgba(4,7,10,0.78)", backdropFilter: "blur(2px)" }}
+      style={{ background: "var(--shadow-modal)", backdropFilter: "blur(2px)" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -906,7 +916,7 @@ export function Modal({
         aria-labelledby={titleId}
         tabIndex={-1}
         className={clsx(
-          "panel flex max-h-full w-full flex-col bg-surface-1 shadow-[0_0_60px_rgba(0,0,0,0.7)]",
+          "panel flex max-h-full w-full flex-col bg-surface-1 shadow-[0_0_60px_var(--shadow-modal)]",
           className,
         )}
         style={{ maxWidth: typeof width === "number" ? `${width}px` : width }}
@@ -984,7 +994,7 @@ export function Drawer({
   return createPortal(
     <div
       className="fixed inset-0 z-[190] flex"
-      style={{ background: "rgba(4,7,10,0.6)" }}
+      style={{ background: "var(--shadow-pop)" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -995,7 +1005,7 @@ export function Drawer({
         aria-modal="true"
         aria-labelledby={titleId}
         className={clsx(
-          "flex h-full min-h-0 flex-col border-border-subtle bg-surface-1 shadow-[0_0_60px_rgba(0,0,0,0.8)]",
+          "flex h-full min-h-0 flex-col border-border-subtle bg-surface-1 shadow-[0_0_60px_var(--shadow-modal)]",
           side === "right" ? "ml-auto border-l" : "mr-auto border-r",
           className,
         )}
@@ -1054,7 +1064,7 @@ export function Tooltip({ label, children, side = "top", className }: TooltipPro
         aria-hidden="true"
         role="presentation"
         className={clsx(
-          "pointer-events-none absolute z-[150] hidden whitespace-nowrap rounded border border-border-strong bg-surface-0 px-1.5 py-1 text-[9px] uppercase tracking-[0.1em] text-ink opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.6)] transition-opacity duration-150 group-hover/tt:block group-hover/tt:opacity-100 group-focus-within/tt:block group-focus-within/tt:opacity-100",
+          "pointer-events-none absolute z-[150] hidden whitespace-nowrap rounded border border-border-strong bg-surface-0 px-1.5 py-1 text-[9px] uppercase tracking-[0.1em] text-ink opacity-0 shadow-[0_4px_16px_var(--shadow-pop)] transition-opacity duration-150 group-hover/tt:block group-hover/tt:opacity-100 group-focus-within/tt:block group-focus-within/tt:opacity-100",
           position[side],
         )}
       >
@@ -1295,7 +1305,7 @@ function ToastStack({
         <div
           key={item.id}
           role={item.tone === "err" ? "alert" : "status"}
-          className="panel pointer-events-auto flex items-start gap-2 bg-surface-1 px-3 py-2 shadow-[0_6px_24px_rgba(0,0,0,0.6)]"
+          className="panel pointer-events-auto flex items-start gap-2 bg-surface-1 px-3 py-2 shadow-[0_6px_24px_var(--shadow-pop)]"
           style={{ borderColor: `${toneColor(item.tone)}55`, animation: "slide-in 0.16s ease-out" }}
         >
           <Badge tone={item.tone} className="mt-[1px] shrink-0">

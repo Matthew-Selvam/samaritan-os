@@ -354,7 +354,12 @@ export function GraphView({
 
           <Panel eyebrow="LEGEND" title="Entity types">
             {typeCounts.length === 0 ? (
-              <EmptyState compact glyph="◌" title="NO TYPES" />
+              <EmptyState
+                compact
+                glyph="◌"
+                title="NO TYPES"
+                description="The legend is built from the entities in the graph. Run an investigation or open a case to populate it."
+              />
             ) : (
               <ul className="flex flex-col gap-1">
                 {typeCounts.map(([type, count]) => (
@@ -461,7 +466,12 @@ export function GraphView({
             <div>
               <SectionTitle>{`Edges (${selection.edges.length})`}</SectionTitle>
               {selection.edges.length === 0 ? (
-                <EmptyState compact glyph="◌" title="NO EDGES" />
+                <EmptyState
+                  compact
+                  glyph="◌"
+                  title="NO EDGES"
+                  description="Nothing correlates this entity to another. Pick a node with edges in the graph to inspect its relationships."
+                />
               ) : (
                 <ul className="flex list-none flex-col gap-1 p-0">
                   {selection.edges.slice(0, 40).map((edge, index) => (

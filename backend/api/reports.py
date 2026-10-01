@@ -373,7 +373,6 @@ async def get_report(inv_id: str, format: Optional[str] = Query(default=None)):
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="signal-os-{record.get("inv_id")}.pdf"',
-            "Content-Length": str(len(pdf)),
         },
     )
 
@@ -426,7 +425,6 @@ async def export_report(inv_id: str, request: Request,
             media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="{stem}.zip"',
-                "Content-Length": str(len(payload)),
             },
         )
 
@@ -441,13 +439,17 @@ async def export_report(inv_id: str, request: Request,
         media_type, extension = "text/markdown; charset=utf-8", "md"
 
     get_metrics().incr("api.reports.exported", tags={"format": fmt})
-    await _audit(request, record, fmt, len(body))
+    # Audit the real on-wire size in bytes. `body` is bytes for the binary
+    # formats and str for the text ones; `len(str)` counts *characters*, which
+    # understated the audit trail by the UTF-8 expansion of every non-ASCII
+    # character (em dashes, accented names).
+    size = len(body) if isinstance(body, bytes) else len(body.encode("utf-8"))
+    await _audit(request, record, fmt, size)
     return Response(
         content=body,
         media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{stem}.{extension}"',
-            "Content-Length": str(len(body)),
         },
     )
 

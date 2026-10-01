@@ -395,7 +395,12 @@ export function ReportsView({
         <aside className="scroll-thin hidden min-h-0 flex-col gap-2 overflow-y-auto xl:flex">
           <Panel eyebrow="CONTENTS" title="Table of contents">
             {toc.length === 0 ? (
-              <EmptyState compact glyph="⋯" title="NO HEADINGS" />
+              <EmptyState
+              compact
+              glyph="⋯"
+              title="NO HEADINGS"
+              description="The table of contents is built from the report's Markdown headings. QUILL emits them once a report has been written."
+            />
             ) : (
               <nav aria-label="Report contents">
                 <ul className="m-0 flex list-none flex-col gap-0.5 p-0">

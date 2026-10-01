@@ -108,7 +108,7 @@ export function ShortcutsDialog({
   return (
     <div
       className="fixed inset-0 z-[1000] flex items-start justify-center pt-[12vh] px-4"
-      style={{ background: "rgba(2,6,10,0.82)", backdropFilter: "blur(2px)" }}
+      style={{ background: "var(--scrim)", backdropFilter: "blur(2px)" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -146,7 +146,7 @@ export function ShortcutsDialog({
             style={{ color: "var(--text-muted)", cursor: "pointer", background: "transparent", border: "1px solid transparent" }}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = "var(--red)";
-              e.currentTarget.style.borderColor = "rgba(255,68,85,0.3)";
+              e.currentTarget.style.borderColor = "var(--line-err-30)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.color = "var(--text-muted)";
@@ -176,7 +176,7 @@ export function ShortcutsDialog({
                       <li
                         key={command.id}
                         className="flex items-center justify-between gap-3 py-1.5"
-                        style={{ borderBottom: "1px solid rgba(30,45,61,0.5)" }}
+                        style={{ borderBottom: "1px solid var(--line-hairline-50)" }}
                       >
                         <div className="min-w-0">
                           <div style={{ fontSize: 11, color: "var(--text)" }}>{command.label}</div>
@@ -192,8 +192,8 @@ export function ShortcutsDialog({
                           style={{
                             fontSize: 10,
                             color: "var(--green)",
-                            background: "rgba(0,255,136,0.07)",
-                            border: "1px solid rgba(0,255,136,0.25)",
+                            background: "var(--tint-accent-07)",
+                            border: "1px solid var(--line-accent-25)",
                             fontFamily: "var(--font-mono)",
                             whiteSpace: "nowrap",
                           }}
@@ -206,7 +206,7 @@ export function ShortcutsDialog({
                       <li
                         key={extra.id}
                         className="flex items-center justify-between gap-3 py-1.5"
-                        style={{ borderBottom: "1px solid rgba(30,45,61,0.5)" }}
+                        style={{ borderBottom: "1px solid var(--line-hairline-50)" }}
                       >
                         <div className="min-w-0">
                           <div style={{ fontSize: 11, color: "var(--text)" }}>{extra.label}</div>
@@ -224,8 +224,8 @@ export function ShortcutsDialog({
                           style={{
                             fontSize: 10,
                             color: "var(--cyan)",
-                            background: "rgba(0,212,255,0.07)",
-                            border: "1px solid rgba(0,212,255,0.25)",
+                            background: "var(--tint-info-07)",
+                            border: "1px solid var(--line-info-25)",
                             fontFamily: "var(--font-mono)",
                             whiteSpace: "nowrap",
                           }}

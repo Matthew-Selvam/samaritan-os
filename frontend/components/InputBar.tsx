@@ -149,7 +149,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
         style={{
           background: "var(--bg-card)",
           border: `1px solid ${running ? "var(--green)" : "var(--border-hi)"}`,
-          boxShadow: running ? "0 0 16px rgba(0,255,136,0.12)" : undefined,
+          boxShadow: running ? "0 0 16px var(--tint-accent-12)" : undefined,
         }}
       >
         <span aria-hidden="true" className="select-none text-[14px] text-accent">
@@ -192,7 +192,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
             disabled={!canSubmit}
             className="focus-ring rounded border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors"
             style={{
-              background: canSubmit ? "rgba(0,255,136,0.12)" : "transparent",
+              background: canSubmit ? "var(--tint-accent-12)" : "transparent",
               borderColor: canSubmit ? "var(--green)" : "var(--border)",
               color: canSubmit ? "var(--green)" : "var(--text-muted)",
               cursor: canSubmit ? "pointer" : "not-allowed",

@@ -10,10 +10,11 @@
  */
 
 import { Moon, Sun } from "lucide-react";
-import { useCallback, useId } from "react";
+import { useCallback, useEffect, useId } from "react";
 
 import {
   oppositeTheme,
+  THEME_TOGGLE_EVENT,
   useTheme,
   type Theme,
 } from "@/lib/theme";
@@ -48,6 +49,16 @@ export function ThemeToggle({
     onChange?.(next);
   }, [onChange, next, set]);
 
+  // ⌘T is declared in lib/shortcuts.ts and dispatched by the shell as a custom
+  // event, because the binding lives in the shell while the theme state lives
+  // here. Listening keeps the two in sync without prop-drilling a handler
+  // through the whole tree.
+  useEffect(() => {
+    const onRemote = () => handle();
+    window.addEventListener(THEME_TOGGLE_EVENT, onRemote);
+    return () => window.removeEventListener(THEME_TOGGLE_EVENT, onRemote);
+  }, [handle]);
+
   const isDark = theme === "dark";
   const Glyph = isDark ? Moon : Sun;
 
@@ -57,8 +68,8 @@ export function ThemeToggle({
       onClick={handle}
       className={`focus-ring flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${className}`.trim()}
       style={{
-        background: isDark ? "rgba(0,212,255,0.07)" : "rgba(255,176,32,0.09)",
-        border: `1px solid ${isDark ? "rgba(0,212,255,0.24)" : "rgba(255,176,32,0.28)"}`,
+        background: isDark ? "var(--tint-info-07)" : "var(--tint-warn-09)",
+        border: `1px solid ${isDark ? "var(--line-info-25)" : "var(--line-warn-28)"}`,
         color: isDark ? "var(--cyan)" : "var(--amber)",
         cursor: "pointer",
       }}

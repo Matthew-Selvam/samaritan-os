@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { Badge, Button, Select, Tooltip } from "./ui";
 import { StatusDot } from "./StatusDot";
+import { ThemeToggle } from "./ThemeToggle";
 import { formatTimestamp } from "@/lib/format";
 import { VIEWS, type ViewId } from "@/lib/views";
 import type { Case, HealthLevel } from "@/lib/types";
@@ -30,6 +31,8 @@ export interface TopBarProps {
   onOpenShortcuts?: () => void;
   /** Number of agents registered, shown in the chrome. */
   agentCount?: number;
+  /** Notified after the theme toggle switches dark <-> light. */
+  onThemeChange?: (theme: "dark" | "light") => void;
   className?: string;
 }
 
@@ -59,6 +62,7 @@ export function TopBar({
   onOpenPalette,
   onOpenShortcuts,
   agentCount,
+  onThemeChange,
   className,
 }: TopBarProps) {
   const [now, setNow] = useState<string>("");
@@ -165,6 +169,12 @@ export function TopBar({
         >
           {now}
         </span>
+
+        <ThemeToggle
+          hideLabel
+          onChange={onThemeChange}
+          className="!px-1.5 !py-[3px]"
+        />
 
         {onOpenShortcuts && (
           <Button

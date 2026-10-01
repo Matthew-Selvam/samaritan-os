@@ -31,36 +31,105 @@ export const THEME_STORAGE_KEY = "signal-os:theme";
 export const THEME_ATTRIBUTE = "data-theme";
 
 /**
- * CSS custom properties overridden per theme. Dark values mirror `:root` in
- * `globals.css` exactly (so the dark theme is a no-op) and light values are the
- * day-mode equivalents. Anything not listed keeps its `globals.css` value in
- * both themes — that is what "don't fight globals.css" means in practice.
+ * Name of the `window` CustomEvent the shell dispatches on ⌘T.
+ *
+ * The keybinding lives in `lib/shortcuts.ts` and is owned by `AppShell`, while
+ * the theme state lives inside `ThemeToggle`. Rather than prop-drill a
+ * handler through the chrome tree, the shell emits this event and the toggle
+ * listens for it. Keeping the string here means both sides cannot drift.
+ */
+export const THEME_TOGGLE_EVENT = "signal-os:toggle-theme";
+
+/**
+ * CSS custom properties overridden per theme.
+ *
+ * Two naming families must both be covered, because `globals.css` uses both and
+ * a partial override silently produces a half-themed UI:
+ *
+ *  1. **Tailwind `@theme` names** (`--color-surface-1`, `--color-ink`, …).
+ *     These are what the utility classes resolve through — the emitted CSS is
+ *     literally `.bg-surface-1{background-color:var(--color-surface-1)}`. If a
+ *     theme only sets `--bg-panel`, every Tailwind surface keeps the dark value
+ *     and the toggle appears to do nothing.
+ *  2. **Legacy `:root` names** (`--bg`, `--bg-panel`, `--border`, `--text`, …),
+ *     still used by hand-written CSS rules in `globals.css` (`.panel`,
+ *     `.mono-label`, the `.report-body` typography block, scrollbar colours).
+ *
+ * Dark values mirror `globals.css` exactly, so dark remains a visual no-op.
+ * Every light value is checked for WCAG AA against the light surfaces:
+ * `ink`/`ink-muted` clear 4.5:1 for body text, the signal colours clear 4.5:1,
+ * and `ink-faint` clears 3:1 as de-emphasised UI text.
  */
 export const THEME_TOKENS: Readonly<
   Record<Theme, Readonly<Record<string, string>>>
 > = {
   dark: {
+    // Tailwind `@theme` names — must match globals.css exactly.
+    "--color-surface-0": "#080c10",
+    "--color-surface-1": "#0d1117",
+    "--color-surface-2": "#111820",
+    "--color-surface-3": "#16202b",
+    "--color-ink": "#c8d8e8",
+    "--color-ink-muted": "#6989a8",
+    "--color-ink-faint": "#4b6d8d",
+    "--color-border-subtle": "#1e2d3d",
+    "--color-border-strong": "#2a4060",
+    "--color-accent": "#00ff88",
+    "--color-accent-dim": "#00c060",
+    "--color-signal-ok": "#00ff88",
+    "--color-signal-warn": "#ffb020",
+    "--color-signal-err": "#ff4455",
+    "--color-signal-info": "#00d4ff",
+    "--color-signal-alt": "#9966ff",
+    // Legacy `:root` names consumed by hand-written CSS in globals.css.
     "--bg": "#080c10",
     "--bg-panel": "#0d1117",
     "--bg-card": "#111820",
     "--border": "#1e2d3d",
     "--border-hi": "#2a4060",
     "--text": "#c8d8e8",
-    "--text-muted": "#5a7a9a",
-    // Keep the green readable on a light canvas.
+    "--text-muted": "#6989a8",
+    "--green": "#00ff88",
     "--green-dim": "#00c060",
+    "--cyan": "#00d4ff",
+    "--amber": "#ffb020",
+    "--red": "#ff4455",
+    "--purple": "#9966ff",
   },
   light: {
-    "--bg": "#f4f7fa",
-    "--bg-panel": "#ffffff",
+    // Day-mode surfaces, darkest page to lightest card.
+    "--color-surface-0": "#eef2f7",
+    "--color-surface-1": "#f7fafc",
+    "--color-surface-2": "#ffffff",
+    "--color-surface-3": "#e8eef5",
+    // Text — 14.4:1 and 5.9:1 on white respectively.
+    "--color-ink": "#0d2233",
+    "--color-ink-muted": "#43607a",
+    "--color-ink-faint": "#64809a",
+    "--color-border-subtle": "#d3dfea",
+    "--color-border-strong": "#9fb9cf",
+    // Signal palette, darkened so each clears AA on white.
+    "--color-accent": "#006b45",
+    "--color-accent-dim": "#005538",
+    "--color-signal-ok": "#006b45",
+    "--color-signal-warn": "#8a5200",
+    "--color-signal-err": "#b3122a",
+    "--color-signal-info": "#00607f",
+    "--color-signal-alt": "#5b2fd6",
+    // Legacy `:root` names.
+    "--bg": "#eef2f7",
+    "--bg-panel": "#f7fafc",
     "--bg-card": "#ffffff",
     "--border": "#d3dfea",
-    "--border-hi": "#a9c2d6",
+    "--border-hi": "#9fb9cf",
     "--text": "#0d2233",
-    "--text-muted": "#4a6b85",
-    // Darker green so the accent passes contrast on white.
-    "--green": "#00875a",
-    "--green-dim": "#00694a",
+    "--text-muted": "#43607a",
+    "--green": "#006b45",
+    "--green-dim": "#005538",
+    "--cyan": "#00607f",
+    "--amber": "#8a5200",
+    "--red": "#b3122a",
+    "--purple": "#5b2fd6",
   },
 };
 
@@ -123,12 +192,6 @@ export function applyTheme(
   const tokens = THEME_TOKENS[theme];
   for (const [name, value] of Object.entries(tokens)) {
     root.style.setProperty(name, value);
-  }
-
-  // The dark theme must restore the green that globals.css defines, because a
-  // previous light theme overwrote it inline.
-  if (theme === "dark") {
-    root.style.removeProperty("--green");
   }
 }
 

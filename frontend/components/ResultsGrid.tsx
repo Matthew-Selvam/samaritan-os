@@ -46,9 +46,9 @@ function similarityColor(pct: number): string {
 }
 
 function similarityGlow(pct: number): string {
-  if (pct >= 80) return "0 0 8px rgba(0,255,136,0.3)";
-  if (pct >= 50) return "0 0 8px rgba(255,176,32,0.25)";
-  return "0 0 8px rgba(255,68,85,0.25)";
+  if (pct >= 80) return "0 0 8px var(--line-accent-30)";
+  if (pct >= 50) return "0 0 8px var(--line-warn-25)";
+  return "0 0 8px var(--line-err-25)";
 }
 
 /** Clamp an arbitrary similarity into 0..100. */
@@ -236,7 +236,7 @@ function NameCard({
         style={{
           background: avatar
             ? `url(${avatar}) center/cover no-repeat`
-            : "linear-gradient(135deg, rgba(0,212,255,0.15), rgba(153,102,255,0.15))",
+            : "linear-gradient(135deg, var(--tint-info-15), var(--tint-alt-15))",
           color: "var(--cyan)",
         }}
       >

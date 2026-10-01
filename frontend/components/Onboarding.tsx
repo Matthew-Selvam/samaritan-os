@@ -191,7 +191,7 @@ export function Onboarding({
   return (
     <div
       className="fixed inset-0 z-[1100] flex items-center justify-center p-4"
-      style={{ background: "rgba(2,6,10,0.88)", backdropFilter: "blur(3px)" }}
+      style={{ background: "var(--scrim-deep)", backdropFilter: "blur(3px)" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) finish(false);
       }}
@@ -263,8 +263,8 @@ export function Onboarding({
                 height: 34,
                 fontSize: 16,
                 color: needsAck ? "var(--amber)" : "var(--green)",
-                border: `1px solid ${needsAck ? "rgba(255,176,32,0.3)" : "rgba(0,255,136,0.3)"}`,
-                background: needsAck ? "rgba(255,176,32,0.07)" : "rgba(0,255,136,0.07)",
+                border: `1px solid ${needsAck ? "var(--line-warn-30)" : "var(--line-accent-30)"}`,
+                background: needsAck ? "var(--tint-warn-07)" : "var(--tint-accent-07)",
                 borderRadius: 5,
                 textShadow: needsAck ? "0 0 8px var(--amber)" : "0 0 8px var(--green)",
               }}
@@ -299,8 +299,8 @@ export function Onboarding({
             <div
               className="mt-4 p-3 rounded flex gap-3"
               style={{
-                border: `1px solid ${acknowledged ? "rgba(0,255,136,0.35)" : "rgba(255,176,32,0.35)"}`,
-                background: acknowledged ? "rgba(0,255,136,0.05)" : "rgba(255,176,32,0.05)",
+                border: `1px solid ${acknowledged ? "var(--line-accent-35)" : "var(--line-warn-35)"}`,
+                background: acknowledged ? "var(--tint-accent-05)" : "var(--tint-warn-05)",
               }}
             >
               <ShieldAlert

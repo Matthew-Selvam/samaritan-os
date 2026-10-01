@@ -609,7 +609,12 @@ export function AgentsView({
             <aside className="flex min-h-0 flex-col gap-2">
               <Panel eyebrow="DEPENDENCIES" title="Declared edges" bodyClassName="!p-0">
                 {layout.edges.length === 0 ? (
-                  <EmptyState compact glyph="◌" title="NO EDGES REPORTED" />
+                  <EmptyState
+                    compact
+                    glyph="◌"
+                    title="NO EDGES REPORTED"
+                    description="Agent-to-agent dependencies appear once the backend reports its orchestration graph for this run."
+                  />
                 ) : (
                   <div className="scroll-thin max-h-[420px] overflow-y-auto">
                     <ul className="flex list-none flex-col">
@@ -760,7 +765,12 @@ export function AgentsView({
               }
             >
               {running ? (
-                <EmptyState compact glyph="◷" title={`${consoleAgent} RUNNING…`} />
+                <EmptyState
+                  compact
+                  glyph="◷"
+                  title={`${consoleAgent} RUNNING…`}
+                  description="The standalone console bypasses APEX, so this result arrives on its own rather than as part of a fused investigation."
+                />
               ) : consoleResult === null ? (
                 <EmptyState
                   glyph="⌨"

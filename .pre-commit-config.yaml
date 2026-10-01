@@ -1,0 +1,120 @@
+# pre-commit for Signal-OS
+#
+# Deliberately fast and offline. Every hook below runs locally with no network
+# access beyond pre-commit's own one-time hook-env install, and no service
+# dependencies — a pre-commit hook that needs the internet or a running database
+# is a hook developers learn to bypass with --no-verify, which is worse than
+# having no hook at all.
+#
+# Install:  ./scripts/dev-setup.sh   (or: pre-commit install)
+# Run all:  pre-commit run --all-files
+# Bypass:  git commit --no-verify    (please don't)
+#
+# Two hooks do the real work; the rest are hygiene that costs microseconds.
+#
+#   ruff / ruff-format — the project's own lint and format rules, read from
+#                         infra/ruff.toml, exactly as `make lint` and CI read
+#                         them, so the three cannot drift. The ruff version is
+#                         pinned to the same 0.11.2 CI installs; a floating ref
+#                         would rewrite every developer's hook env on a version
+#                         bump and show up as an unrelated diff in this file.
+#   detect-private-key — this repository's most irreversible mistake. An OSINT
+#                         deployment's .env holds SHODAN_API_KEY, HIBP and
+#                         Numverify keys, LLM provider keys and the Tor control
+#                         password. Once a key reaches a commit, deleting the
+#                         line is not a rotation.
+#
+# No `ruff --fix` on purpose: it rewrites files mid-commit and a developer
+# cannot tell which of their own edits it changed. Run `make lint-fix` when you
+# actually want the autofix.
+
+default_language_version:
+  python: python3
+
+ci:
+  autofix_prs: false
+  autoupdate_commit_msg: "chore: bump pre-commit hooks"
+
+exclude: |
+  (?x)^(
+    backend/.venv/.*|
+    frontend/node_modules/.*|
+    graphify-out/.*|
+    .next/.*|
+    backend/vault_store/.*|
+    backend/sentinel_store/.*|
+    backend/reports/.*
+  )$
+
+repos:
+  # ── Project lint + format ─────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.2
+    hooks:
+      - id: ruff
+        name: ruff check
+        # infra/ruff.toml is referenced explicitly rather than relying on ruff's
+        # upward config discovery, so this can never pick up a developer's
+        # ~/.config/ruff instead of the project's rules.
+        args: [--config, infra/ruff.toml]
+        files: ^(backend|scripts)/.*\.py$
+
+      - id: ruff-format
+        name: ruff format
+        args: [--config, infra/ruff.toml]
+        files: ^(backend|scripts)/.*\.py$
+
+  # ── Secret hygiene ────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # The highest-severity hook in this file. An OSINT deployment's secrets are
+      # provider API keys and a Tor control password; a leaked one is not
+      # recoverable by editing history.
+      - id: detect-private-key
+
+      # Catches the two deploy-breaking mistakes that are invisible in a diff:
+      # a malformed YAML file, and a binary blob committed by accident (a model
+      # checkpoint, a stray database file, a build artefact).
+      - id: check-yaml
+
+      - id: check-added-large-files
+        args: [--max-bytes=2097152]
+
+      # File-level hygiene.
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ── Secrets must never be committed ───────────────────────────────────────
+  - repo: local
+    hooks:
+      # A .env is never committed — .gitignore covers it, but a hook that fires
+      # on `git add -f` is the backstop for the deliberate bypass. Only *added*
+      # files are considered, so the many `.env.example` docs are unaffected.
+      - id: no-secret-files
+        name: block committed .env / key files
+        entry: >-
+          bash -c 'for f in "$@"; do
+          echo "refusing to commit $f: a secret file must not enter the repository"
+          exit 1
+          done' --
+        language: system
+        files: (^|/)\.env$|\.(pem|key|p12|pfx|jks|keystore)$|^id_(rsa|ed25519)$
+        types: [file]
+
+  # ── Project-specific ──────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      # shellcheck on the operational scripts. `language: system` means it uses
+      # whatever is on PATH and skips cleanly when absent, so a fresh clone is
+      # not blocked on `brew install shellcheck`.
+      - id: shellcheck
+        name: shellcheck (scripts/*.sh)
+        entry: shellcheck
+        language: system
+        files: ^scripts/.*\.sh$
+        types: [shell]

@@ -29,6 +29,7 @@ import { Tooltip } from "@/components/ui";
 import { ToastProvider, useToast } from "@/components/ui";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import { Onboarding } from "@/components/Onboarding";
 import type { PaletteItem } from "@/lib/palette";
 import { DashboardView } from "@/components/views/DashboardView";
 import { InvestigateView } from "@/components/views/InvestigateView";
@@ -67,6 +68,7 @@ import type {
 } from "@/lib/types";
 import { useInvestigationStream } from "@/lib/useInvestigationStream";
 import { useHotkeys } from "@/lib/shortcuts";
+import { THEME_TOGGLE_EVENT } from "@/lib/theme";
 import { DEFAULT_VIEW, VIEWS, isViewId, viewByHotkey, viewById, type ViewId } from "@/lib/views";
 import { apiCall, useLocalStorage } from "@/lib/hooks";
 
@@ -154,6 +156,12 @@ function Shell({ initialView, className }: AppShellProps) {
   /* ── Overlays owned elsewhere ── */
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  /**
+   * First-run tour. `null` means "no override" — `Onboarding` then consults
+   * `lib/onboarding.ts`'s localStorage record itself. A boolean forces it open
+   * (palette replay) or closed (dismissed this session).
+   */
+  const [onboardingOpen, setOnboardingOpen] = useState<boolean | null>(null);
 
   const viewDef = viewById(view);
 
@@ -563,11 +571,46 @@ function Shell({ initialView, className }: AppShellProps) {
   );
 
   /* ── Keyboard: routed through lib/shortcuts.ts's useHotkeys ── */
+  /**
+   * Focus the input bar once it exists.
+   *
+   * `/` can switch to INVESTIGATE from any view, and that view is only mounted
+   * after the next React commit — so a single `setTimeout(0)` races the render
+   * and silently does nothing. Retry across frames instead, stopping as soon as
+   * the imperative handle is live.
+   */
+  const focusInputWhenReady = useCallback((attempts = 12) => {
+    const tick = (left: number) => {
+      const handle = inputRef.current;
+      if (handle) {
+        handle.focus();
+        return;
+      }
+      if (left <= 0) return;
+      window.requestAnimationFrame(() => tick(left - 1));
+    };
+    tick(attempts);
+  }, []);
+
   useHotkeys(
     useMemo(
       () => [
         { binding: "mod+k", handler: () => setPaletteOpen((open) => !open), allowInInput: true },
-        { binding: "?", handler: () => setShortcutsOpen(true), shift: true },
+        { binding: "shift+?", handler: () => setShortcutsOpen(true) },
+        // Declared in lib/shortcuts.ts as theme.toggle / onboarding.restart but
+        // unbound here — without these the dialog advertises keys that do
+        // nothing. The toggle is driven through a custom event because
+        // ThemeToggle owns lib/theme.ts's state; the tour opens directly.
+        {
+          binding: "mod+t",
+          handler: () => window.dispatchEvent(new CustomEvent(THEME_TOGGLE_EVENT)),
+          allowInInput: true,
+        },
+        {
+          binding: "mod+shift+?",
+          handler: () => setOnboardingOpen(true),
+          allowInInput: true,
+        },
         {
           binding: "/",
           handler: () => {
@@ -575,8 +618,10 @@ function Shell({ initialView, className }: AppShellProps) {
             // one of those first when the analyst is elsewhere.
             if (view !== "dashboard" && view !== "investigate") {
               navigate("investigate");
-              // Wait for the view to mount before stealing focus.
-              window.setTimeout(() => inputRef.current?.focus(), 0);
+              // The view is mounted by React on the next commit, so a single
+              // setTimeout(0) can run before InputBar exists. Poll a few frames
+              // and stop as soon as the handle is live.
+              focusInputWhenReady();
               return;
             }
             inputRef.current?.focus();
@@ -688,6 +733,7 @@ function Shell({ initialView, className }: AppShellProps) {
               running={running}
               caseLabel={currentCase?.name ?? null}
               investigation={investigation}
+              timeline={timelineEvents}
               onOpenCase={(inv) => void openInvestigation(inv)}
               onOpenOps={() => navigate("ops")}
               onNavigate={(next) => {
@@ -698,6 +744,7 @@ function Shell({ initialView, className }: AppShellProps) {
 
           {view === "investigate" && (
             <InvestigateView
+              inputRef={inputRef}
               investigation={investigation}
               streamStatus={stream.status}
               entities={entities}
@@ -857,12 +904,37 @@ function Shell({ initialView, className }: AppShellProps) {
         onNavigate={navigate}
         onNewInvestigation={() => {
           clearRun();
+          if (view !== "dashboard" && view !== "investigate") {
+            navigate("investigate");
+            focusInputWhenReady();
+            return;
+          }
           inputRef.current?.focus();
         }}
         onRotateCircuit={() => void rotateCircuit()}
         onOpenInvestigation={(inv) => void openInvestigation(inv)}
         recent={history.slice(0, 8)}
         caseLabel={currentCase?.name ?? null}
+        onReplayTour={() => setOnboardingOpen(true)}
+      />
+
+      {/* First-run tour.
+
+          `Onboarding` decides visibility itself from `lib/onboarding.ts`'s
+          localStorage record — but only when `open` is left `undefined`, since
+          an explicit `open` prop always wins. Passing `open={false}` here would
+          therefore suppress the tour for every first-time visitor. So the prop
+          is only supplied while the palette/⌘⇧? is replaying it. */}
+      <Onboarding
+        {...(onboardingOpen === null ? {} : { open: onboardingOpen })}
+        onClose={(completed) => {
+          setOnboardingOpen(false);
+          if (completed) {
+            toast.push("Tour complete. Press ? for the full shortcut reference.", "info");
+            navigate("dashboard");
+            focusInputWhenReady();
+          }
+        }}
       />
     </div>
   );
@@ -943,6 +1015,8 @@ interface OverlaysProps {
   onOpenInvestigation: (investigation: Investigation) => void;
   recent: readonly Investigation[];
   caseLabel: string | null;
+  /** Re-open the first-run tour on demand (palette action). */
+  onReplayTour: () => void;
 }
 
 /**
@@ -963,6 +1037,7 @@ function ShellOverlays({
   onOpenInvestigation,
   recent,
   caseLabel,
+  onReplayTour,
 }: OverlaysProps) {
   const items = useMemo(() => {
     const out: PaletteItem[] = [];
@@ -1001,6 +1076,15 @@ function ShellOverlays({
         icon: "▤",
         source: "static",
         payload: { kind: "clear-case" },
+      },
+      {
+        id: "action:replay-tour",
+        label: "Replay the getting-started tour",
+        hint: "Orientation, authorized use, input bar and reading the graph",
+        icon: "◎",
+        source: "static",
+        keywords: ["onboarding", "tour", "help", "intro", "first run"],
+        payload: { kind: "replay-tour" },
       },
     );
     for (const agent of AGENT_ROSTER_FOR_PALETTE) {
@@ -1041,9 +1125,13 @@ function ShellOverlays({
       }
       if (payload.kind === "agent" && payload.name) {
         onNavigate("agents");
+        return;
+      }
+      if (payload.kind === "replay-tour") {
+        onReplayTour();
       }
     },
-    [onNavigate, onNewInvestigation, onRotateCircuit],
+    [onNavigate, onNewInvestigation, onRotateCircuit, onReplayTour],
   );
 
   return (

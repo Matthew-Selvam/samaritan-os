@@ -122,11 +122,11 @@ function installVisTheme(): void {
     .vis-time-axis .vis-text { color: #5a7a9a; font-size: 9px; letter-spacing: 0.08em; }
     .vis-time-axis .vis-grid.vis-major { border-color: #2a4060; }
     .vis-labelset .vis-label { color: #c8d8e8; font-size: 10px; }
-    .vis-foreground .vis-group { border-color: #2a4060; background: rgba(17,24,32,0.6); }
+    .vis-foreground .vis-group { border-color: #2a4060; background: var(--line-hairline); }
     .vis-labelset .vis-label.vis-odd,
     .vis-labelset .vis-label.vis-even { background: transparent; color: #5a7a9a; }
     .vis-time-axis .vis-text.vis-vertical { color: #3d5872; }
-    .vis-current-time { background-color: rgba(0,255,136,0.35); }
+    .vis-current-time { background-color: var(--line-accent-35); }
 
     /* Item chips: dark surface, mono type, per-source accent border. */
     .vis-item {
@@ -147,7 +147,7 @@ function installVisTheme(): void {
     .vis-item .vis-item-dot { border-color: inherit; }
     .vis-item.low { border-style: dashed; opacity: 0.75; }
     .vis-item.vis-selected {
-      box-shadow: 0 0 0 1px #00d4ff, 0 0 10px rgba(0,212,255,0.45);
+      box-shadow: 0 0 0 1px #00d4ff, 0 0 10px var(--tint-info-45);
       color: #fff !important;
     }
     .vis-tooltip {
@@ -518,7 +518,12 @@ export function TimelineView({
           ) : allEvents.length === 0 ? (
             <div className="flex min-h-[360px] flex-1 items-center justify-center rounded-md border border-border-subtle bg-surface-1">
               {caseTimeline.state === "loading" ? (
-                <EmptyState compact glyph="◷" title="LOADING TIMELINE…" />
+                <EmptyState
+                  compact
+                  glyph="◷"
+                  title="LOADING TIMELINE…"
+                  description="Fetching case timeline events. They appear here once the case has investigations with dated signals."
+                />
               ) : caseTimeline.state === "error" ? (
                 <ErrorState compact message={caseTimeline.error} onRetry={caseTimeline.reload} />
               ) : (

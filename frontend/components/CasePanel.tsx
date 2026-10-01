@@ -202,7 +202,7 @@ export function CasePanel({
                   title={inv.input}
                   className="focus-ring relative w-full min-w-0 rounded border px-2 py-1.5 text-left transition-colors"
                   style={{
-                    background: active ? "rgba(0,255,136,0.06)" : "var(--bg-card)",
+                    background: active ? "var(--tint-accent-06)" : "var(--bg-card)",
                     borderColor: active ? "var(--border-hi)" : "var(--border)",
                   }}
                 >

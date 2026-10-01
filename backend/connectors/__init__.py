@@ -240,9 +240,7 @@ _SPECS: tuple[_Spec, ...] = (
             _Requirement("transformers", "module", "transformers", optional=True),
             _Requirement("open_clip_torch", "module", "open_clip", optional=True),
             _Requirement("BIOCLIP_ENABLED", "env", "BIOCLIP_ENABLED", optional=True),
-            _Requirement(
-                "BIOCLIP_OLLAMA_ENABLED", "env", "BIOCLIP_OLLAMA_ENABLED", optional=True
-            ),
+            _Requirement("BIOCLIP_OLLAMA_ENABLED", "env", "BIOCLIP_OLLAMA_ENABLED", optional=True),
         ),
     ),
     _Spec(
@@ -273,9 +271,7 @@ _SPECS: tuple[_Spec, ...] = (
         summary="Dark-web / paste monitoring sweep (SENTINEL).",
         requirements=(
             _Requirement("FEATURE_DARK_WEB_ALERTS", "env", "FEATURE_DARK_WEB_ALERTS"),
-            _Requirement(
-                "DARKWEB_INDEX_URLS", "env", "DARKWEB_INDEX_URLS", optional=True
-            ),
+            _Requirement("DARKWEB_INDEX_URLS", "env", "DARKWEB_INDEX_URLS", optional=True),
         ),
     ),
     _Spec(
@@ -394,9 +390,7 @@ _SPECS: tuple[_Spec, ...] = (
         attr="run_transcribe",
         summary="Speech-to-text for audio and video (ECHO, IRIS).",
         requirements=(
-            _Requirement(
-                "faster-whisper", "module", "faster_whisper", optional=True
-            ),
+            _Requirement("faster-whisper", "module", "faster_whisper", optional=True),
             _Requirement("whisperx", "module", "whisperx", optional=True),
             _Requirement("WHISPER_API_KEY", "env", "WHISPER_API_KEY", optional=True),
         ),
@@ -420,7 +414,7 @@ class _LazyConnector:
     name the connector they actually ran.
     """
 
-    __slots__ = ("_spec", "_fn", "_module", "_error")
+    __slots__ = ("_error", "_fn", "_module", "_spec")
 
     def __init__(self, spec: _Spec) -> None:
         """Record the spec without touching the module.
@@ -473,9 +467,7 @@ class _LazyConnector:
         if self._fn is not None:
             return self._fn
         if self._error is not None:
-            raise RuntimeError(
-                f"connector {self._spec.name!r} is unavailable: {self._error}"
-            )
+            raise RuntimeError(f"connector {self._spec.name!r} is unavailable: {self._error}")
         try:
             self._module = importlib.import_module(self._spec.module)
         except Exception as exc:  # noqa: BLE001 — degrade, never break the import
@@ -486,9 +478,7 @@ class _LazyConnector:
         fn = getattr(self._module, self._spec.attr, None)
         if not callable(fn):
             self._error = f"{self._spec.module} has no callable {self._spec.attr!r}"
-            raise RuntimeError(
-                f"connector {self._spec.name!r} is unavailable: {self._error}"
-            )
+            raise RuntimeError(f"connector {self._spec.name!r} is unavailable: {self._error}")
         self._fn = fn
         return fn
 
@@ -497,9 +487,7 @@ class _LazyConnector:
         """``True`` once the entry point has been imported and bound."""
         return self._fn is not None
 
-    def __call__(
-        self, *args: Any, **kwargs: Any
-    ) -> Coroutine[Any, Any, dict[str, Any]]:
+    def __call__(self, *args: Any, **kwargs: Any) -> Coroutine[Any, Any, dict[str, Any]]:
         """Call the connector, resolving it on first use.
 
         Args:
@@ -519,10 +507,7 @@ class _LazyConnector:
             state = f"error={self._error}"
         else:
             state = "unresolved"
-        return (
-            f"<connector {self._spec.name} -> "
-            f"{self._spec.module}.{self._spec.attr} {state}>"
-        )
+        return f"<connector {self._spec.name} -> {self._spec.module}.{self._spec.attr} {state}>"
 
 
 def _build_registry() -> dict[str, _LazyConnector]:
@@ -540,9 +525,7 @@ def _build_registry() -> dict[str, _LazyConnector]:
 #: callable and forward everything, but they do not import the connector module
 #: until first use. Use ``CONNECTORS[name].resolve()`` when you need the real
 #: function object.
-CONNECTORS: dict[str, Callable[..., Coroutine[Any, Any, dict[str, Any]]]] = (
-    _build_registry()
-)
+CONNECTORS: dict[str, Callable[..., Coroutine[Any, Any, dict[str, Any]]]] = _build_registry()
 
 #: Sorted tuple of the registered logical names, for iteration and tests.
 CONNECTOR_NAMES: tuple[str, ...] = tuple(sorted(CONNECTORS))
@@ -639,12 +622,14 @@ def connector_health() -> dict[str, Any]:
                 missing.append(f"{req.name} (optional, absent)")
                 continue
             required_ok = False
-            missing.append(
-                req.name if ok is False else f"{req.name} (undetermined)"
-            )
+            missing.append(req.name if ok is False else f"{req.name} (undetermined)")
 
         installed = bool(available and required_ok)
-        notes = _health_notes(installed, missing, satisfied_optional)
+        notes = _health_notes(
+            installed=installed,
+            missing=missing,
+            satisfied_optional=satisfied_optional,
+        )
         if not available and import_error:
             notes = f"module import failed ({import_error})"
 
@@ -664,6 +649,7 @@ def connector_health() -> dict[str, Any]:
 
 
 def _health_notes(
+    *,
     installed: bool,
     missing: list[str],
     satisfied_optional: list[str],
@@ -679,11 +665,7 @@ def _health_notes(
         A short human-readable sentence describing current readiness.
     """
     if installed:
-        extra = (
-            f" (also present: {', '.join(satisfied_optional)})"
-            if satisfied_optional
-            else ""
-        )
+        extra = f" (also present: {', '.join(satisfied_optional)})" if satisfied_optional else ""
         return f"ready{extra}"
     hard = [m for m in missing if "optional" not in m]
     if hard:

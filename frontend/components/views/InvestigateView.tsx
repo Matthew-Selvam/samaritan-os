@@ -65,6 +65,12 @@ export type InvestigateTab =
   | "photo";
 
 export interface InvestigateViewProps {
+  /**
+   * Ref for the input bar. The shell owns it so `/` and ⌘↵ work from anywhere,
+   * which means this view must forward it rather than keeping a local ref the
+   * shell cannot reach.
+   */
+  inputRef?: React.Ref<InputBarHandle>;
   investigation: Investigation | null;
   /** Current WebSocket state, shown in the header. */
   streamStatus: StreamStatus;
@@ -175,6 +181,7 @@ function agentStatusText(status: AgentStatus | "running" | "idle"): string {
  * <InvestigateView investigation={inv} entities={entities} onSubmit={run} running={busy} />
  */
 export function InvestigateView({
+  inputRef,
   investigation,
   streamStatus,
   entities,
@@ -299,7 +306,7 @@ export function InvestigateView({
     <div className={clsx("flex min-h-0 flex-1 flex-col", className)}>
       {/* ── Input ── */}
       <div className="border-b border-border-subtle bg-surface-1 px-3 py-2">
-        <InputBar onSubmit={onSubmit} running={running} caseLabel={caseLabel} />
+        <InputBar ref={inputRef} onSubmit={onSubmit} running={running} caseLabel={caseLabel} />
       </div>
 
       {/* ── Tabs ── */}

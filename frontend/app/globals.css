@@ -12,10 +12,11 @@
   --color-surface-2: #111820;
   --color-surface-3: #16202b;
 
-  /* Text */
+  /* Text — ink-muted/ink-faint are the smallest lightening of the original
+     palette that still clears WCAG AA on the --surface-2 card background. */
   --color-ink: #c8d8e8;
-  --color-ink-muted: #5a7a9a;
-  --color-ink-faint: #3d5872;
+  --color-ink-muted: #6989a8;
+  --color-ink-faint: #4b6d8d;
 
   /* Borders */
   --color-border-subtle: #1e2d3d;
@@ -61,6 +62,77 @@
 }
 
 * { box-sizing: border-box; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THEME-ADAPTIVE TINTS
+   These are expressed with color-mix() against the tokens above rather than
+   hardcoded rgba(). Because `--green`, `--amber`, `--bg` etc. are re-declared
+   inline on <html> by lib/theme.ts when the theme changes, every tint below
+   follows the active theme automatically — which is why a light theme needs no
+   second copy of the palette. Additions only; nothing above is removed.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Modal scrims — the CommandPalette / Onboarding / ShortcutsDialog backdrop. */
+  --scrim:      color-mix(in srgb, var(--bg) 82%, transparent);
+  --scrim-deep: color-mix(in srgb, var(--bg) 90%, transparent);
+
+  /* Accent (green) tints, 1% → 25%. */
+  --tint-accent-01: color-mix(in srgb, var(--green) 1%,  transparent);
+  --tint-accent-02: color-mix(in srgb, var(--green) 2%,  transparent);
+  --tint-accent-04: color-mix(in srgb, var(--green) 4%,  transparent);
+  --tint-accent-05: color-mix(in srgb, var(--green) 5%,  transparent);
+  --tint-accent-06: color-mix(in srgb, var(--green) 6%,  transparent);
+  --tint-accent-07: color-mix(in srgb, var(--green) 7%,  transparent);
+  --tint-accent-08: color-mix(in srgb, var(--green) 8%,  transparent);
+  --tint-accent-09: color-mix(in srgb, var(--green) 9%,  transparent);
+  --tint-accent-10: color-mix(in srgb, var(--green) 10%, transparent);
+  --tint-accent-12: color-mix(in srgb, var(--green) 12%, transparent);
+  --tint-accent-18: color-mix(in srgb, var(--green) 18%, transparent);
+  --line-accent-25: color-mix(in srgb, var(--green) 25%, transparent);
+  --line-accent-30: color-mix(in srgb, var(--green) 30%, transparent);
+  --line-accent-35: color-mix(in srgb, var(--green) 35%, transparent);
+
+  /* Warn (amber) tints. */
+  --tint-warn-05: color-mix(in srgb, var(--amber) 5%,  transparent);
+  --tint-warn-06: color-mix(in srgb, var(--amber) 6%,  transparent);
+  --tint-warn-07: color-mix(in srgb, var(--amber) 7%,  transparent);
+  --tint-warn-09: color-mix(in srgb, var(--amber) 9%,  transparent);
+  --line-warn-25:  color-mix(in srgb, var(--amber) 25%, transparent);
+  --line-warn-28:  color-mix(in srgb, var(--amber) 28%, transparent);
+  --line-warn-30:  color-mix(in srgb, var(--amber) 30%, transparent);
+  --line-warn-35:  color-mix(in srgb, var(--amber) 35%, transparent);
+
+  /* Err (red) tints. */
+  --tint-err-05: color-mix(in srgb, var(--red) 5%, transparent);
+  --tint-err-07: color-mix(in srgb, var(--red) 7%, transparent);
+  --tint-err-09: color-mix(in srgb, var(--red) 9%, transparent);
+  --line-err-25:  color-mix(in srgb, var(--red) 25%, transparent);
+  --line-err-30:  color-mix(in srgb, var(--red) 30%, transparent);
+
+  /* Info (cyan) tints. */
+  --tint-info-06: color-mix(in srgb, var(--cyan) 6%,  transparent);
+  --tint-info-07: color-mix(in srgb, var(--cyan) 7%,  transparent);
+  --tint-info-08: color-mix(in srgb, var(--cyan) 8%,  transparent);
+  --tint-info-09: color-mix(in srgb, var(--cyan) 9%,  transparent);
+  --tint-info-15: color-mix(in srgb, var(--cyan) 15%, transparent);
+  --tint-info-45: color-mix(in srgb, var(--cyan) 45%, transparent);
+  --tint-alt-15:  color-mix(in srgb, var(--purple) 15%, transparent);
+  --line-info-20:  color-mix(in srgb, var(--cyan) 20%, transparent);
+  --line-info-25:  color-mix(in srgb, var(--cyan) 25%, transparent);
+  --line-info-30:  color-mix(in srgb, var(--cyan) 30%, transparent);
+  --line-info-50:  color-mix(in srgb, var(--cyan) 50%, transparent);
+
+  /* Neutral tints that follow the muted ink rather than a fixed grey. */
+  --tint-neutral-08: color-mix(in srgb, var(--text-muted) 8%,  transparent);
+  --line-neutral-28: color-mix(in srgb, var(--text-muted) 28%, transparent);
+  --line-hairline:   color-mix(in srgb, var(--border) 60%, transparent);
+  --line-hairline-50: color-mix(in srgb, var(--border) 50%, transparent);
+
+  /* Elevation. A neutral black shadow looks like a smudge in light mode, so it
+     is mixed from the page background instead and fades with the theme. */
+  --shadow-pop: color-mix(in srgb, var(--bg) 70%, transparent);
+  --shadow-modal: color-mix(in srgb, var(--bg) 82%, transparent);
+}
 
 html, body {
   margin: 0; padding: 0;
@@ -126,11 +198,11 @@ body::before {
   white-space:           nowrap;
 }
 
-.tone-ok   { color: var(--green); background: rgba(0,255,136,0.09);  border: 1px solid rgba(0,255,136,0.30); }
-.tone-warn { color: var(--amber); background: rgba(255,176,32,0.09);  border: 1px solid rgba(255,176,32,0.30); }
-.tone-err  { color: var(--red);   background: rgba(255,68,85,0.09);   border: 1px solid rgba(255,68,85,0.30);  }
-.tone-info { color: var(--cyan);  background: rgba(0,212,255,0.09);  border: 1px solid rgba(0,212,255,0.30);  }
-.tone-idle { color: var(--text-muted); background: rgba(90,122,154,0.08); border: 1px solid rgba(90,122,154,0.28); }
+.tone-ok   { color: var(--green); background: var(--tint-accent-09); border: 1px solid var(--line-accent-30); }
+.tone-warn { color: var(--amber); background: var(--tint-warn-09);   border: 1px solid var(--line-warn-30); }
+.tone-err  { color: var(--red);   background: var(--tint-err-09);    border: 1px solid var(--line-err-30);  }
+.tone-info { color: var(--cyan);  background: var(--tint-info-09);   border: 1px solid var(--line-info-30); }
+.tone-idle { color: var(--text-muted); background: var(--tint-neutral-08); border: 1px solid var(--line-neutral-28); }
 
 .tone-ok.tone-pulse   { animation: pulse-green 2s ease-in-out infinite; }
 .tone-info.tone-pulse { animation: pulse-cyan 2s ease-in-out infinite; }
@@ -167,7 +239,7 @@ body::before {
 }
 .panel-interactive:hover {
   border-color: var(--border-hi);
-  box-shadow: 0 0 12px rgba(0,255,136,0.06);
+  box-shadow: 0 0 12px var(--tint-accent-06);
 }
 
 /* ── Palantir hairline backdrop ───────────────────────────────────────────── */
@@ -251,7 +323,7 @@ body::before {
 
 /* ── Search-result highlight ──────────────────────────────────────────────── */
 .highlight {
-  background:  rgba(0,255,136,0.18);
+  background:  var(--tint-accent-18);
   color:       var(--green);
   border-radius: 2px;
   padding:      0 1px;
@@ -336,15 +408,15 @@ body::before {
 .report-body a {
   color: var(--cyan);
   text-decoration: none;
-  border-bottom: 1px dotted rgba(0, 212, 255, 0.5);
+  border-bottom: 1px dotted var(--line-info-50);
 }
 .report-body a:hover { border-bottom-style: solid; }
 
 .report-inline-code {
   padding: 1px 4px;
   border-radius: 3px;
-  background: rgba(0, 212, 255, 0.08);
-  border: 1px solid rgba(0, 212, 255, 0.2);
+  background: var(--tint-info-08);
+  border: 1px solid var(--line-info-20);
   color: var(--cyan);
   font-size: 0.92em;
   word-break: break-word;
@@ -367,7 +439,7 @@ body::before {
   margin: 0 0 12px;
   padding: 8px 12px;
   border-left: 3px solid var(--amber);
-  background: rgba(255, 176, 32, 0.06);
+  background: var(--tint-warn-06);
   color: var(--text);
 }
 .report-callout p:last-child { margin-bottom: 0; }
@@ -399,10 +471,10 @@ body::before {
 }
 .report-body td {
   padding: 5px 8px;
-  border-bottom: 1px solid rgba(30, 45, 61, 0.6);
+  border-bottom: 1px solid var(--line-hairline);
   vertical-align: top;
 }
-.report-body tbody tr:hover { background: rgba(0, 255, 136, 0.04); }
+.report-body tbody tr:hover { background: var(--tint-accent-04); }
 .report-body tbody tr:last-child td { border-bottom: 0; }
 
 /* GFM task lists */

@@ -31,6 +31,7 @@ import { InputBar } from "@/components/InputBar";
 import { InputBarHandle } from "@/components/InputBar";
 import { StatusDot } from "@/components/StatusDot";
 import { CasePanel } from "@/components/CasePanel";
+import { TelemetryPanels } from "@/components/TelemetryPanels";
 import { getHealth, getMetrics } from "@/lib/api";
 import {
   colorFor,
@@ -42,7 +43,7 @@ import {
   statusTone,
   truncate,
 } from "@/lib/format";
-import type { HealthLevel, Investigation, MetricsSnapshot } from "@/lib/types";
+import type { HealthLevel, Investigation, MetricsSnapshot, TimelineEvent } from "@/lib/types";
 import {
   deriveStats,
   normalizeDeepHealth,
@@ -65,6 +66,8 @@ export interface DashboardViewProps {
   caseLabel?: string | null;
   /** Current run, used for the entity/signal tallies. */
   investigation?: Investigation | null;
+  /** Timeline events for the current run; folded into the activity grid. */
+  timeline?: readonly TimelineEvent[];
   /** Refreshed on every change so the tallies follow a live run. */
   investigationNonce?: number;
   onOpenCase?: (investigation: Investigation) => void;
@@ -114,6 +117,7 @@ export function DashboardView({
   running,
   caseLabel = null,
   investigation = null,
+  timeline = [],
   investigationNonce = 0,
   onOpenCase,
   onOpenOps,
@@ -282,6 +286,14 @@ export function DashboardView({
             </p>
           )}
         </Panel>
+
+        {/* ── Computed telemetry: activity grid, confidence spread, latency ── */}
+        <TelemetryPanels
+          investigation={investigation}
+          timeline={timeline}
+          metrics={metrics.data}
+          loading={metrics.state === "loading" && !metrics.data && investigation === null}
+        />
 
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
           {/* ── Tallies ── */}
