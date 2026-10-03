@@ -97,7 +97,6 @@ ignore = [
   # (opsec.py, connectors/net.py, every connector) and is what config.py
   # per-agent TIMEOUT_* values feed into.
   "ASYNC109", # async fn with `timeout` param
-  "ASYNC240", # blocking os.path in async fn — guarded, small paths only
   "ASYNC251", # long sleep in async fn — deliberate rate limiting
 
   # S110/S301/S307-style bandit noise: the platform's entire purpose is to

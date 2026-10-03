@@ -374,9 +374,20 @@ def has_scope(principal_dict: dict[str, Any], scope: str) -> bool:
     return wanted == "read" and bool({"investigate", "search"} & scopes)
 
 
+#: Liveness paths that must stay reachable without a key. The container
+#: image's own HEALTHCHECK runs ``curl`` with no auth header, and orchestrators
+#: probe these directly — gating them would make a healthy container look dead.
+AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
+    {"/api/health", "/api/health/deep", "/healthz", "/livez", "/readyz"}
+)
+
+
 def _authenticate(request: Any) -> dict[str, Any]:
     """Resolve the principal for *request*, or raise :class:`AuthError`."""
     if not auth_enabled():
+        return dict(ANONYMOUS_PRINCIPAL)
+
+    if _request_path(request) in AUTH_EXEMPT_PATHS:
         return dict(ANONYMOUS_PRINCIPAL)
 
     ip = client_ip(request)

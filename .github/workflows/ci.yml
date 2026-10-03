@@ -197,7 +197,8 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: "gitleaks (secret scan)"
-        uses: gitleaks/gitleaks-action@v2.44.1
+        # Pin the v2 line, not a nonexistent v2.44.1 (v2.x stops at v2.3.9).
+        uses: gitleaks/gitleaks-action@v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
